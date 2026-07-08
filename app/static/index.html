@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Autonomous Browser Agent</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <div class="logo">
+            <div class="logo-icon">B</div>
+            <h1>Autonomous Browser Agent</h1>
+        </div>
+        <div class="status-summary">
+            <div class="status-dot" id="global-status-dot"></div>
+            <span id="global-status-text">Idle</span>
+        </div>
+    </header>
+
+    <div class="app-container">
+        <!-- Left Panel: Chat & Task controls -->
+        <div class="panel" id="left-panel">
+            <div class="panel-header">
+                <span>Task Planner</span>
+            </div>
+            <div class="chat-area" id="chat-messages">
+                <div class="chat-welcome">
+                    <h3>Welcome!</h3>
+                    <p>Enter a natural language instruction to send the autonomous agent, e.g.:</p>
+                    <p style="margin-top: 10px; font-style: italic; color: #a2d2ff;">
+                        "Search Amazon for iPhone 15 prices and return the cheapest option."
+                    </p>
+                </div>
+            </div>
+            
+            <div class="history-title">Recent Tasks</div>
+            <div class="history-list" id="task-history-list">
+                <!-- Loaded dynamically -->
+            </div>
+
+            <div class="chat-input-area">
+                <div class="chat-input-wrapper">
+                    <textarea id="prompt-input" placeholder="Type a new instruction for the browser agent..."></textarea>
+                    <div class="action-buttons">
+                        <button class="btn-primary" id="btn-run">Launch Agent</button>
+                        <button class="btn-stop" id="btn-stop" style="display: none;">Stop Run</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Center Panel: Live Browser View & Timeline -->
+        <div class="panel" id="center-panel">
+            <div class="panel-header">
+                <span>Live Browser Viewport</span>
+                <span id="viewport-step-num" style="color: var(--accent-color); font-weight: bold;">Step 0</span>
+            </div>
+            <div class="browser-header">
+                <div class="browser-dots">
+                    <div class="browser-dot"></div>
+                    <div class="browser-dot"></div>
+                    <div class="browser-dot"></div>
+                </div>
+                <div class="browser-url-bar" id="browser-url-text">about:blank</div>
+            </div>
+            <div class="browser-viewport">
+                <!-- Live Screenshot or video stream -->
+                <img id="browser-screenshot" src="" alt="Browser Viewport" style="display: none;">
+                <video id="browser-video" controls style="display: none; max-width:100%; max-height:100%;"></video>
+                <div class="viewport-overlay" id="viewport-placeholder">
+                    <div class="viewport-overlay-icon">🌐</div>
+                    <h3>Browser Viewport Standby</h3>
+                    <p style="color: var(--text-muted); margin-top: 8px; font-size: 0.85rem;">
+                        Start a task to see live web-browser execution here.
+                    </p>
+                </div>
+            </div>
+            <div class="timeline-panel">
+                <div class="panel-header" style="padding: 6px 15px; border-bottom: 1px solid var(--border-color); font-size: 0.75rem;">
+                    <span>Action Timeline</span>
+                </div>
+                <div class="timeline-steps" id="timeline-container">
+                    <!-- Action steps will populate here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel: Logs, Extracted Data, and Reports -->
+        <div class="panel" id="right-panel">
+            <div class="tabs-header">
+                <button class="tab-btn active" onclick="switchTab('logs')">Execution Logs</button>
+                <button class="tab-btn" onclick="switchTab('data')">Extracted Data</button>
+                <button class="tab-btn" onclick="switchTab('report')">Final Report</button>
+            </div>
+            
+            <!-- Logs Tab -->
+            <div class="tab-content active" id="tab-logs" style="height: calc(100% - 45px); padding: 0;">
+                <div class="terminal" id="terminal-logs">
+                    <div class="log-row">
+                        <span class="log-message">Terminal initialized. Standing by...</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Data Tab -->
+            <div class="tab-content" id="tab-data" style="height: calc(100% - 45px);">
+                <div class="extracted-data-wrapper">
+                    <div class="export-bar">
+                        <button class="btn-secondary" onclick="exportData('csv')">Download CSV</button>
+                        <button class="btn-secondary" onclick="exportData('json')">Download JSON</button>
+                    </div>
+                    <div class="data-table-container">
+                        <table class="data-table" id="data-table">
+                            <thead>
+                                <tr id="data-table-headers">
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="data-table-body">
+                                <tr>
+                                    <td style="text-align: center; color: var(--text-muted);">No data extracted yet.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Report Tab -->
+            <div class="tab-content" id="tab-report" style="height: calc(100% - 45px);">
+                <div class="report-content" id="report-md-content">
+                    Final markdown report will appear here once the task completes successfully.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

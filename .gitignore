@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+venv/
+env/
+ENV/
+
+# Local databases and runtime state logs
+logs/*.db
+logs/*.log
+logs/agent.db
+
+# Screenshots, video sessions, and reports output folders
+screenshots/
+sessions/
+reports/
+
+# Editor and OS settings
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
