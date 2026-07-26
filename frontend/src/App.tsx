@@ -90,10 +90,6 @@ export default function App() {
   const [reportContent, setReportContent] = useState('Final markdown report will appear here once the task completes successfully.');
   
   // Settings Form States
-  const [provider, setProvider] = useState('mistral');
-  const [geminiKey, setGeminiKey] = useState('');
-  const [groqKey, setGroqKey] = useState('');
-  const [mistralKey, setMistralKey] = useState('');
   const [headless, setHeadless] = useState(false);
 
   // General UI States
@@ -182,7 +178,6 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: promptText,
-          provider: provider,
           headless: headless
         })
       });
@@ -190,6 +185,7 @@ export default function App() {
         const data = await response.json();
         setActiveTaskId(data.task_id);
         setInspectedStep(null);
+        setPromptValue('');
         setActiveTab('tasks');
         showToast("Task successfully scheduled!", "success");
         fetchTaskHistory();
@@ -210,6 +206,27 @@ export default function App() {
       }
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const resumeTask = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation(); // don't also trigger selectTaskFromHistory on the parent card
+    try {
+      showToast("Resuming from where that task left off...", "info");
+      const response = await fetch(`/api/tasks/${id}/resume`, { method: 'POST' });
+      if (response.ok) {
+        const data = await response.json();
+        setActiveTaskId(data.task_id);
+        setInspectedStep(null);
+        setActiveTab('tasks');
+        showToast("Resumed task launched!", "success");
+        fetchTaskHistory();
+      } else {
+        const err = await response.text();
+        showToast(`Failed to resume: ${err}`, "error");
+      }
+    } catch (e) {
+      showToast("Connection to backend failed", "error");
     }
   };
 
@@ -443,9 +460,10 @@ export default function App() {
                   <div className="max-w-4xl mx-auto flex flex-col gap-6 py-2">
                     {/* Hero Header */}
                     <div className="text-center flex flex-col gap-3">
-                      <h3 className="text-3xl font-extrabold tracking-tight">What would you like the Browser Agent to do?</h3>
+                      <h3 className="text-3xl font-extrabold tracking-tight">What would you like the agent to do?</h3>
                       <p className="text-sm text-slate-500 dark:text-zinc-400">
-                        Type your instruction in plain language. The agent will spin up a headless browser to complete it.
+                        Browse the web, search for information, or organize local files -- describe it in plain language.
+                        A local model (via Ollama) reasons through the steps; no cloud API keys involved.
                       </p>
                     </div>
 
@@ -454,13 +472,13 @@ export default function App() {
                       <textarea
                         value={promptValue}
                         onChange={e => setPromptValue(e.target.value)}
-                        placeholder="e.g., Search cheapest iPhone 15 under Rs 65000 on Google and report prices"
+                        placeholder="e.g., Search for the cheapest iPhone 15 under Rs 65000 and report prices"
                         className="w-full h-32 bg-transparent text-sm p-4 outline-none resize-none font-medium placeholder-slate-400"
                       />
                       <div className="flex justify-between items-center px-4 py-2 border-t border-slate-100 dark:border-zinc-800/40">
                         <span className="text-[10px] text-slate-500 dark:text-zinc-400 flex items-center gap-1">
                           <Sparkles className="w-3.5 h-3.5 text-[#6366F1]" />
-                          Autonomous Automation Mode
+                          Autonomous Automation Mode &middot; Local LLM
                         </span>
                         <button
                           onClick={() => startTask(promptValue)}
@@ -473,14 +491,23 @@ export default function App() {
                       </div>
                     </div>
 
+                    {/* Explicit-prompting guidance -- the agent is only as good as the
+                        objective it's given: a vague prompt forces it to guess. */}
+                    <div className="px-4 py-3 bg-[#6366F1]/5 dark:bg-[#6366F1]/10 border border-[#6366F1]/20 rounded-xl text-xs text-slate-600 dark:text-zinc-300 leading-relaxed">
+                      <span className="font-bold text-[#6366F1]">Tip:</span> Be specific -- vague prompts force the agent to guess.
+                      For browsing, name what to search for or the site to visit and what to extract (e.g. "on Amazon" or "the price").
+                      For file organizing, name the folder explicitly (e.g. "in my Downloads folder") -- the agent won't guess a folder on its own.
+                    </div>
+
                     {/* Suggested Prompts Cards Grid */}
                     <div className="flex flex-col gap-4">
                       <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400">Suggested Prompt Templates</h4>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                         {[
                           { title: "Amazon search prices", desc: "Find the cheapest laptop under 60000 rupees on Amazon.", icon: SearchIcon },
                           { title: "Wikipedia summary", desc: "Open Wikipedia, look up Quantum Computing, and summarize.", icon: BookOpen },
                           { title: "Form filling demo", desc: "Open mock form page and submit appointment inputs.", icon: Calendar },
+                          { title: "Organize Downloads", desc: "Rename the doc1 files in my Downloads folder based on their content.", icon: FolderOpen },
                         ].map((item, idx) => {
                           const Icon = item.icon;
                           return (
@@ -847,7 +874,10 @@ export default function App() {
                               <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1 leading-relaxed truncate">{task.result_summary}</p>
                             )}
                           </div>
-                          <button className="flex items-center gap-2 border border-slate-200 dark:border-zinc-800 hover:border-[#2563EB] dark:hover:border-[#60A5FA] px-4 py-2 rounded-xl text-xs font-semibold transition-all">
+                          <button
+                            onClick={(e) => resumeTask(task.id, e)}
+                            className="flex items-center gap-2 border border-slate-200 dark:border-zinc-800 hover:border-[#2563EB] dark:hover:border-[#60A5FA] px-4 py-2 rounded-xl text-xs font-semibold transition-all"
+                          >
                             <RotateCcw className="w-3.5 h-3.5" />
                             Replay Run
                           </button>
@@ -864,54 +894,21 @@ export default function App() {
                       <h4 className="font-extrabold text-sm uppercase tracking-wider text-slate-500 dark:text-zinc-400 mb-6 pb-2 border-b border-slate-100 dark:border-zinc-800/50">Agent Configurations</h4>
                       
                       <form onSubmit={handleApplySettings} className="flex flex-col gap-5">
-                        {/* LLM Provider Toggle */}
+                        {/* Local Model Info -- this agent runs entirely on a local Ollama
+                            model, no cloud API keys involved. Base URL/model name are set
+                            via OLLAMA_BASE_URL / OLLAMA_MODEL in .env, not editable here. */}
                         <div className="flex flex-col gap-2">
-                          <label className="text-xs font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-wider">Active LLM Provider</label>
-                          <select
-                            value={provider}
-                            onChange={e => setProvider(e.target.value)}
-                            className="w-full bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl px-4 py-3 text-xs outline-none text-[#0F172A] dark:text-[#FAFAFA] font-semibold"
-                          >
-                            <option value="gemini">Google Gemini</option>
-                            <option value="groq">Groq (OpenAI-compatible Llama)</option>
-                            <option value="mistral">Mistral AI</option>
-                          </select>
-                        </div>
-
-                        {/* API Keys Configuration */}
-                        <div className="flex flex-col gap-4 border-t border-slate-100 dark:border-zinc-800/50 pt-4">
-                          <div className="flex flex-col gap-2">
-                            <label className="text-xs font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-wider">Gemini API Key</label>
-                            <input
-                              type="password"
-                              placeholder="Enter GEMINI_API_KEY"
-                              value={geminiKey}
-                              onChange={e => setGeminiKey(e.target.value)}
-                              className="w-full bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl px-4 py-3 text-xs outline-none font-medium placeholder-slate-400"
-                            />
+                          <label className="text-xs font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-wider">Local Model (Ollama)</label>
+                          <div className="w-full bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl px-4 py-3 text-xs font-mono text-[#0F172A] dark:text-[#FAFAFA]">
+                            qwen2.5:3b @ http://localhost:11434/v1 <span className="text-slate-400">(defaults, lightweight)</span>
                           </div>
-
-                          <div className="flex flex-col gap-2">
-                            <label className="text-xs font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-wider">Groq API Key</label>
-                            <input
-                              type="password"
-                              placeholder="Enter GROQ_API_KEY"
-                              value={groqKey}
-                              onChange={e => setGroqKey(e.target.value)}
-                              className="w-full bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl px-4 py-3 text-xs outline-none font-medium placeholder-slate-400"
-                            />
-                          </div>
-
-                          <div className="flex flex-col gap-2">
-                            <label className="text-xs font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-wider">Mistral API Key</label>
-                            <input
-                              type="password"
-                              placeholder="Enter MISTRAL_API_KEY"
-                              value={mistralKey}
-                              onChange={e => setMistralKey(e.target.value)}
-                              className="w-full bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl px-4 py-3 text-xs outline-none font-medium placeholder-slate-400"
-                            />
-                          </div>
+                          <p className="text-[10px] text-slate-500 dark:text-zinc-400 leading-normal">
+                            No API keys needed -- runs fully offline on your machine. Change the model or endpoint via
+                            <code className="mx-1 px-1 py-0.5 bg-slate-100 dark:bg-zinc-800 rounded">OLLAMA_MODEL</code>
+                            /
+                            <code className="mx-1 px-1 py-0.5 bg-slate-100 dark:bg-zinc-800 rounded">OLLAMA_BASE_URL</code>
+                            in <code className="px-1 py-0.5 bg-slate-100 dark:bg-zinc-800 rounded">.env</code>, then restart the backend. Ollama must be running (<code className="px-1 py-0.5 bg-slate-100 dark:bg-zinc-800 rounded">ollama serve</code>) with the model pulled.
+                          </p>
                         </div>
 
                         {/* Browser Headless Mode Toggle */}

@@ -1,18 +1,24 @@
+"""
+LLM-driven step planner -- restored after a brief detour through a fully
+rule-based workflow engine (see app/workflows/ and app/engine/, still in the
+repo but no longer the primary path). That approach could only run tasks that
+matched a pre-built template; this restores genuine "any task" handling by
+asking a model to decide the next action at each step, the way the original
+version of this project did.
+
+The difference from the original: this talks to a LOCAL model served by Ollama
+(http://localhost:11434/v1 by default) via its OpenAI-compatible API, instead
+of a cloud provider (Gemini/Groq/Mistral). No API key, no per-call cost,
+nothing leaves your machine -- same idea as AgenticSeek's local-provider setup.
+Ollama needs to actually be running with a model pulled; see the setup
+instructions that go with this change.
+"""
 import json
 import re
 import logging
-from google import genai
-from google.genai import types
+import httpx
 from openai import OpenAI
-from app.config import (
-    GEMINI_API_KEY,
-    GROQ_API_KEY,
-    MISTRAL_API_KEY,
-    DEFAULT_LLM_PROVIDER as CONFIG_PROVIDER,
-    GEMINI_MODEL,
-    GROQ_MODEL,
-    MISTRAL_MODEL
-)
+from app.config import OLLAMA_BASE_URL, OLLAMA_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +33,14 @@ At each step, you will be given:
 Based on this information, you must decide the next logical action.
 
 Allowed Actions:
-1. {"name": "navigate", "url": "https://example.com"} - Navigate to a website.
-2. {"name": "click", "element_id": "button-1"} - Click a visible button, link, or input. Use the tag ID provided in brackets.
-3. {"name": "type", "element_id": "input-2", "text": "my search text", "press_enter": true} - Fill text into an input field. Set `press_enter` to true if you want to submit right away.
-4. {"name": "scroll", "direction": "down"} - Scroll "down" or "up" on the current page to reveal more content.
-5. {"name": "wait", "seconds": 3} - Pause execution for a few seconds. Useful if a page is loading or processing dynamic requests.
-6. {"name": "complete", "summary": "Detailed summary of findings..."} - Call this when you have successfully completed the user's objective and have extracted the required information. Include the findings directly in the summary.
+1. {"name": "web_search", "query": "search terms"} - Search the web directly and get back a list of results (title, url, snippet). Prefer this over navigating to a search engine's website when you need to find information or a URL to visit -- it's faster and more reliable than clicking through a search engine's page.
+2. {"name": "navigate", "url": "https://example.com"} - Navigate directly to a specific website (e.g. a URL you got from a web_search result, or one you already know).
+3. {"name": "click", "element_id": "button-1"} - Click a visible button, link, or input. Use the tag ID provided in brackets.
+4. {"name": "type", "element_id": "input-2", "text": "my search text", "press_enter": true} - Fill text into an input field. Set `press_enter` to true if you want to submit right away.
+5. {"name": "scroll", "direction": "down"} - Scroll "down" or "up" on the current page to reveal more content.
+6. {"name": "wait", "seconds": 3} - Pause execution for a few seconds. Useful if a page is loading or processing dynamic requests.
+7. {"name": "extract", "data": {"key": "value", ...}} - Record structured data you've found on the page (e.g. prices, facts, summaries). Call this whenever you see information relevant to the objective.
+8. {"name": "complete", "summary": "Detailed summary of findings..."} - Call this when you have successfully completed the user's objective and have extracted the required information. Include the findings directly in the summary.
 
 Formatting Rules:
 - You MUST output your response as a valid JSON object. Do not include any other conversational text outside the JSON.
@@ -52,79 +60,47 @@ Example Response:
 }
 """
 
+
 def clean_json_string(response_text: str) -> str:
-    """Extracts the first JSON block from a response string."""
+    """Extracts the first JSON block from a response string. Local models are
+    more prone than hosted ones to wrapping JSON in ```json fences or adding
+    stray commentary despite the system prompt's instructions, so this has to
+    be more forgiving than 'just json.loads() it'."""
     response_text = response_text.strip()
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response_text, re.DOTALL)
     if match:
         return match.group(1)
-        
+
     start = response_text.find('{')
     end = response_text.rfind('}')
     if start != -1 and end != -1:
-        return response_text[start:end+1]
-        
+        return response_text[start:end + 1]
+
     return response_text
 
+
 class AIPlanner:
-    def __init__(self, provider: str = None):
-        self.provider = (provider or CONFIG_PROVIDER).lower()
-        self.client = None
-        self.model_name = ""
-        self._init_clients()
-
-    def _init_clients(self):
-        if self.provider == "gemini":
-            if not GEMINI_API_KEY:
-                logger.warning("GEMINI_API_KEY is not set. Gemini client may fail to initialize.")
-            # Use the new Client library
-            self.client = genai.Client(api_key=GEMINI_API_KEY)
-            self.model_name = GEMINI_MODEL
-        elif self.provider == "groq":
-            if not GROQ_API_KEY:
-                logger.warning("GROQ_API_KEY is not set. Groq client may fail to initialize.")
-            self.client = OpenAI(
-                base_url="https://api.groq.com/openai/v1",
-                api_key=GROQ_API_KEY
-            )
-            self.model_name = GROQ_MODEL
-        elif self.provider == "mistral":
-            if not MISTRAL_API_KEY:
-                logger.warning("MISTRAL_API_KEY is not set. Mistral client may fail to initialize.")
-            self.client = OpenAI(
-                base_url="https://api.mistral.ai/v1",
-                api_key=MISTRAL_API_KEY
-            )
-            self.model_name = MISTRAL_MODEL
-        else:
-            raise ValueError(f"Unknown LLM provider: {self.provider}")
-
-    def _call_gemini(self, prompt: str) -> str:
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                temperature=0.2
-            )
+    def __init__(self, base_url: str = None, model: str = None):
+        self.base_url = base_url or OLLAMA_BASE_URL
+        self.model = model or OLLAMA_MODEL
+        # Ollama's OpenAI-compatible endpoint ignores the API key entirely,
+        # but the client library requires *something* non-empty to be passed.
+        #
+        # trust_env=False is deliberate: this always talks to a local/user-
+        # configured endpoint, never a third party, so system proxy env vars
+        # (HTTP_PROXY/ALL_PROXY -- common behind a corporate VPN) should never
+        # apply here. Without this, some environments fail to even construct
+        # the client (httpx eagerly inspects proxy env vars and can raise an
+        # ImportError over a missing optional SOCKS dependency) before ever
+        # attempting to reach Ollama.
+        self.client = OpenAI(
+            base_url=self.base_url,
+            api_key="ollama",
+            http_client=httpx.Client(trust_env=False),
         )
-        return response.text
-
-    def _call_openai_compatible(self, prompt: str) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.2
-        )
-        return response.choices[0].message.content
 
     def plan_next_step(self, objective: str, current_url: str, page_title: str, page_map: str, history: list) -> dict:
-        """Determines the next action to perform using the selected LLM."""
+        """Determines the next action to perform using the local model."""
         history_lines = []
         for step in history:
             history_lines.append(f"Step {step['step']}: Action: {step['action_type']} | Details: {step['description']}")
@@ -145,30 +121,37 @@ ACTION HISTORY:
 
 Provide the next thought and action in JSON format.
 """
-        logger.info(f"Planning next step with {self.provider} using model {self.model_name}.")
+        logger.info(f"Planning next step with local model '{self.model}' at {self.base_url}.")
 
         try:
-            if self.provider == "gemini":
-                response_text = self._call_gemini(prompt)
-            elif self.provider in ("groq", "mistral"):
-                response_text = self._call_openai_compatible(prompt)
-            else:
-                raise ValueError(f"Unsupported LLM provider: {self.provider}")
-            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+            )
+            response_text = response.choices[0].message.content
+
             cleaned_json = clean_json_string(response_text)
             decision = json.loads(cleaned_json)
-            
+
             if "thought" not in decision or "action" not in decision:
                 raise ValueError("Response JSON is missing 'thought' or 'action' key.")
-                
+
             return decision
 
         except Exception as e:
-            logger.error(f"Error calling {self.provider} model: {e}")
+            logger.error(f"Error calling local model at {self.base_url}: {e}")
             return {
-                "thought": f"An error occurred while calling the AI: {str(e)}. I will wait and retry.",
+                "thought": (
+                    f"An error occurred while calling the local model: {str(e)}. "
+                    f"Is Ollama running (`ollama serve`) with '{self.model}' pulled? I will wait and retry."
+                ),
                 "action": {
                     "name": "wait",
-                    "seconds": 5
-                }
+                    "seconds": 5,
+                },
             }

@@ -21,16 +21,18 @@ for directory in [SCREENSHOTS_DIR, SESSIONS_DIR, REPORTS_DIR, LOGS_DIR]:
 # Database path
 DB_PATH = LOGS_DIR / "agent.db"
 
-# LLM Configurations
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
-DEFAULT_LLM_PROVIDER = os.getenv("DEFAULT_LLM_PROVIDER", "mistral").lower()
-
-# Model Names
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-4-scout-17b-16e")
-MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
+# Local LLM configuration (Ollama's OpenAI-compatible API). No API key, no
+# cloud provider -- everything runs on this machine. See README for setup.
+#
+# Default model is qwen2.5:3b -- a lightweight (~2GB) model chosen so the
+# agent runs on modest hardware (no GPU required) while still following the
+# JSON-structured "thought + action" instructions in app/planner/planner.py
+# reliably enough to be usable. If you have a stronger machine and want
+# noticeably better planning/reasoning, override OLLAMA_MODEL with a larger
+# model in the same family (e.g. qwen2.5:7b or qwen2.5:14b) -- no code
+# changes needed, just `ollama pull <model>` and update .env.
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
 
 # Browser Configurations
 BROWSER_HEADLESS = os.getenv("BROWSER_HEADLESS", "False").lower() in ("true", "1", "yes")

@@ -70,4 +70,18 @@ app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
 
 if __name__ == "__main__":
     logger.info(f"Starting server on http://{HOST}:{PORT}")
-    uvicorn.run("app.main:app", host=HOST, port=PORT, reload=True)
+    # reload_dirs is scoped to app/ only -- without this, uvicorn's default
+    # reload watches the entire project root, INCLUDING logs/, sessions/,
+    # screenshots/, and reports/, which the app itself writes to on every
+    # task step (every screenshot, every log line to agent.db, every video).
+    # That turns normal task execution into a stream of self-triggered
+    # "changes detected" restarts, which can kill a task mid-run. It also
+    # meant edits to tests/, scripts/, or the frontend triggered a backend
+    # restart even though nothing the server actually imports had changed.
+    uvicorn.run(
+        "app.main:app",
+        host=HOST,
+        port=PORT,
+        reload=True,
+        reload_dirs=[str(ROOT_DIR / "app")],
+    )

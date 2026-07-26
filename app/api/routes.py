@@ -19,6 +19,8 @@ from app.database import (
     get_extracted_data
 )
 from app.executor.executor import run_agent_task, latest_interactive_elements
+from app.dispatcher import classify_task
+from app.organizer.task_runner import run_organizer_task
 from app.reports.report import generate_markdown_report, export_data_csv, export_data_json
 from app.config import SCREENSHOTS_DIR, SESSIONS_DIR, REPORTS_DIR
 
@@ -35,37 +37,49 @@ class TaskResponse(BaseModel):
     prompt: str
     status: str
 
-def run_agent_task_in_thread(task_id: str, prompt: str, provider: str = None, headless: bool = None):
+def run_agent_task_in_thread(task_id: str, prompt: str, provider: str = None, headless: bool = None, resume_context: dict = None):
     """Target function for background thread. Sets up Proactor loop on Windows."""
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-        
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(run_agent_task(task_id, prompt, provider=provider, headless=headless))
+        loop.run_until_complete(run_agent_task(task_id, prompt, provider=provider, headless=headless, resume_context=resume_context))
     finally:
         loop.close()
 
 @router.post("/tasks", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
 async def start_task(request: TaskRequest):
-    """Starts a new browser agent task in the background."""
+    """Starts a new task in the background, routed to either the browser
+    agent or the document organizer based on what the prompt is asking for."""
     if not request.prompt.strip():
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
-        
+
     task_id = f"task_{uuid.uuid4().hex[:8]}"
-    
+
     # Write initial record to SQLite
     create_task(task_id, request.prompt)
-    
-    # Schedule background execution in a dedicated thread
-    thread = threading.Thread(
-        target=run_agent_task_in_thread,
-        args=(task_id, request.prompt, request.provider, request.headless),
-        daemon=True
-    )
+
+    task_kind = classify_task(request.prompt)
+
+    if task_kind == "organizer":
+        # Organizer work is synchronous local file I/O -- run it directly in
+        # the background thread, no event loop needed.
+        thread = threading.Thread(
+            target=run_organizer_task,
+            args=(task_id, request.prompt),
+            daemon=True
+        )
+    else:
+        thread = threading.Thread(
+            target=run_agent_task_in_thread,
+            args=(task_id, request.prompt, request.provider, request.headless),
+            daemon=True
+        )
+
     thread.start()
-    
+
     return TaskResponse(task_id=task_id, prompt=request.prompt, status="running")
 
 @router.get("/tasks")
@@ -124,6 +138,50 @@ async def stop_task(task_id: str):
         return {"message": "Stop signal sent successfully."}
     else:
         return {"message": f"Task is not running (current status: {task['status']})"}
+
+@router.post("/tasks/{task_id}/resume", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
+async def resume_task(task_id: str):
+    """Starts a new task that continues a previous (stopped/failed/completed)
+    one -- same objective, but a browser task picks up from the last known
+    URL instead of restarting at google.com, and the planner is given the
+    prior run's action history for context. Organizer tasks are simply
+    re-run: rescanning a folder is idempotent, since already-renamed files
+    no longer look generically-named and are skipped automatically."""
+    original = get_task(task_id)
+    if not original:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    prior_actions = get_actions(task_id)
+    new_task_id = f"task_{uuid.uuid4().hex[:8]}"
+    create_task(new_task_id, original["prompt"])
+
+    if classify_task(original["prompt"]) == "organizer":
+        thread = threading.Thread(
+            target=run_organizer_task,
+            args=(new_task_id, original["prompt"]),
+            daemon=True
+        )
+    else:
+        last_url = None
+        for a in reversed(prior_actions):
+            if a.get("url"):
+                last_url = a["url"]
+                break
+
+        resume_context = {
+            "source_task_id": task_id,
+            "last_url": last_url,
+            "prior_actions": prior_actions,
+        }
+        thread = threading.Thread(
+            target=run_agent_task_in_thread,
+            args=(new_task_id, original["prompt"], None, None, resume_context),
+            daemon=True
+        )
+
+    thread.start()
+
+    return TaskResponse(task_id=new_task_id, prompt=original["prompt"], status="running")
 
 @router.get("/tasks/{task_id}/screenshot")
 async def get_screenshot(task_id: str, step: int = None):
