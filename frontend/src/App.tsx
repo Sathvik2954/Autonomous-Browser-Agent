@@ -123,7 +123,23 @@ export default function App() {
   const [taskHistory, setTaskHistory] = useState<TaskRecord[]>([]);
   const [toasts, setToasts] = useState<{ id: string; message: string; type: 'success' | 'info' | 'error' }[]>([]);
 
-  const activityEndRef = useRef<HTMLDivElement>(null);
+  // Auto-scrolling the activity log: scrollIntoView() on a sentinel div
+  // (the previous approach) also scrolls ancestor containers -- including
+  // the whole page -- to bring it into view, which fights the user the
+  // moment they try to scroll up while a task is still polling every 1.5s.
+  // Scrolling the log panel's own scrollTop directly, and only when the
+  // user hasn't scrolled away from the bottom themselves, keeps the
+  // autoscroll contained to the panel and lets the user actually read
+  // older entries without being yanked back down.
+  const logsContainerRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+
+  const handleLogsScroll = () => {
+    const el = logsContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distanceFromBottom < 32;
+  };
 
   useEffect(() => {
     const root = document.documentElement;
@@ -148,8 +164,9 @@ export default function App() {
   }, [activeTaskId]);
 
   useEffect(() => {
-    if (activityEndRef.current) {
-      activityEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    const el = logsContainerRef.current;
+    if (el && stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
     }
   }, [logs]);
 
@@ -177,6 +194,7 @@ export default function App() {
     setVideoExists(false);
     setLatestScreenshotUrl(null);
     setInspectedStep(null);
+    stickToBottomRef.current = true;
   };
 
   const startTask = async (promptText: string) => {
@@ -481,7 +499,11 @@ export default function App() {
                           What I'm doing
                         </span>
                       </div>
-                      <div className="max-h-64 overflow-y-auto p-4 flex flex-col gap-2">
+                      <div
+                        ref={logsContainerRef}
+                        onScroll={handleLogsScroll}
+                        className="max-h-64 overflow-y-auto p-4 flex flex-col gap-2"
+                      >
                         {logs.length === 0 ? (
                           <p className="text-base text-[#A8A29E] py-6 text-center">Waking up...</p>
                         ) : (
@@ -506,7 +528,6 @@ export default function App() {
                             </div>
                           ))
                         )}
-                        <div ref={activityEndRef}></div>
                       </div>
                     </div>
                   </div>
