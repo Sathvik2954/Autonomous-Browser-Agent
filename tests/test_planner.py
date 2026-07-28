@@ -5,9 +5,11 @@ to a safe fallback action instead of crashing the task loop. Whether a real
 local model produces good *decisions* can only be judged by actually running
 it (see README's Ollama setup) -- that's not something a unit test can verify.
 """
+import json
+
 import pytest
 
-from app.planner.planner import AIPlanner, clean_json_string
+from app.planner.planner import AIPlanner, clean_json_string, repair_json_string
 
 
 def test_clean_json_string_handles_plain_json():
@@ -50,3 +52,28 @@ def test_planner_uses_ollama_defaults_when_not_overridden():
     planner = AIPlanner()
     assert planner.base_url == OLLAMA_BASE_URL
     assert planner.model == OLLAMA_MODEL
+
+
+def test_repair_json_string_escapes_raw_newline_inside_string_value():
+    # This is the failure mode most likely behind "Expecting ',' delimiter" --
+    # a raw newline character inside a string value that json.loads rejects.
+    broken = '{\n  "thought": "line one\nline two",\n  "action": {"name": "wait", "seconds": 1}\n}'
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(broken)
+    repaired = repair_json_string(broken)
+    decision = json.loads(repaired)
+    assert decision["thought"] == "line one\nline two"
+    assert decision["action"]["name"] == "wait"
+
+
+def test_repair_json_string_strips_trailing_comma():
+    broken = '{"thought": "hi", "action": {"name": "wait", "seconds": 1,},}'
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(broken)
+    decision = json.loads(repair_json_string(broken))
+    assert decision["action"]["seconds"] == 1
+
+
+def test_repair_json_string_leaves_valid_json_unchanged_in_effect():
+    valid = '{"thought": "hi", "action": {"name": "wait", "seconds": 1}}'
+    assert json.loads(repair_json_string(valid)) == json.loads(valid)

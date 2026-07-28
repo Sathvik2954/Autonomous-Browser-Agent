@@ -79,6 +79,52 @@ def clean_json_string(response_text: str) -> str:
     return response_text
 
 
+def repair_json_string(text: str) -> str:
+    """Best-effort fix for the two malformed-JSON patterns small local models
+    produce most often:
+
+    1. A raw newline/tab inside a string value (e.g. a multi-line "thought")
+       instead of an escaped \\n -- the JSON spec requires control characters
+       inside strings to be escaped, and a 3B model frequently forgets. This
+       walks the text tracking whether we're inside a string literal
+       (honoring backslash escapes) and only escapes control characters when
+       inside one, so structural whitespace between tokens is left alone.
+    2. A trailing comma before a closing } or ].
+
+    This is a heuristic, not a real JSON parser -- it won't fix every
+    malformed response (e.g. an unescaped stray quote inside a string is
+    ambiguous and can't be reliably repaired), but it covers the common
+    cases cheaply with no extra model round-trip."""
+    out = []
+    in_string = False
+    escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                out.append(ch)
+                escaped = False
+            elif ch == '\\':
+                out.append(ch)
+                escaped = True
+            elif ch == '"':
+                out.append(ch)
+                in_string = False
+            elif ch == '\n':
+                out.append('\\n')
+            elif ch == '\r':
+                out.append('\\r')
+            elif ch == '\t':
+                out.append('\\t')
+            else:
+                out.append(ch)
+        else:
+            if ch == '"':
+                in_string = True
+            out.append(ch)
+    repaired = ''.join(out)
+    return re.sub(r',\s*([}\]])', r'\1', repaired)
+
+
 class AIPlanner:
     def __init__(self, base_url: str = None, model: str = None):
         self.base_url = base_url or OLLAMA_BASE_URL
@@ -136,7 +182,13 @@ Provide the next thought and action in JSON format.
             response_text = response.choices[0].message.content
 
             cleaned_json = clean_json_string(response_text)
-            decision = json.loads(cleaned_json)
+            try:
+                decision = json.loads(cleaned_json)
+            except json.JSONDecodeError:
+                # qwen2.5:3b occasionally emits syntactically invalid JSON --
+                # most often a raw newline inside the "thought" string, or a
+                # trailing comma. Try a heuristic repair before giving up.
+                decision = json.loads(repair_json_string(cleaned_json))
 
             if "thought" not in decision or "action" not in decision:
                 raise ValueError("Response JSON is missing 'thought' or 'action' key.")
@@ -145,6 +197,8 @@ Provide the next thought and action in JSON format.
 
         except Exception as e:
             logger.error(f"Error calling local model at {self.base_url}: {e}")
+            if 'response_text' in locals():
+                logger.error(f"Raw model response that failed to parse: {response_text!r}")
             return {
                 "thought": (
                     f"An error occurred while calling the local model: {str(e)}. "
