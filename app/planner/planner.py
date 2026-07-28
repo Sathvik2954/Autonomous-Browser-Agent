@@ -93,6 +93,14 @@ def clean_json_string(response_text: str) -> str:
     return response_text
 
 
+# Every action name the executor actually knows how to handle (see the
+# if/elif chain in app/executor/executor.py). Kept as one list so the
+# schema's enum and the prompt's allowed-actions description can't drift
+# apart from what the executor really supports.
+ALLOWED_ACTION_NAMES = [
+    "web_search", "navigate", "click", "type", "scroll", "wait", "extract", "complete",
+]
+
 # A loose response_format={"type": "json_object"} only constrains the model
 # to emit *some* valid JSON -- it says nothing about which keys to use, so a
 # small model is free to (and in practice often does) return syntactically
@@ -100,16 +108,23 @@ def clean_json_string(response_text: str) -> str:
 # schema is used with response_format={"type": "json_schema", ...} instead,
 # which -- where the server supports it -- constrains generation at the
 # grammar level to actually contain these keys, not just hope the model
-# follows the prompt's instructions. "action" is deliberately left loose
-# beyond requiring a "name" string, since its shape varies by action type
-# (see the allowed-actions list in SYSTEM_PROMPT).
+# follows the prompt's instructions.
+#
+# action.name is constrained to the exact enum of actions the executor
+# understands -- without this, a schema that only requires "name" to be
+# *a* string still lets the model write an entire sentence into it (seen in
+# practice: "navigating across browsers and devices navigation methods -- a
+# brief overview of..." instead of "navigate"), which executor.py correctly
+# rejects as an unknown action and does nothing with. The rest of "action"
+# is deliberately left loose beyond that, since its shape varies by which
+# action was picked (see the allowed-actions list in SYSTEM_PROMPT).
 DECISION_JSON_SCHEMA = {
     "type": "object",
     "properties": {
         "thought": {"type": "string"},
         "action": {
             "type": "object",
-            "properties": {"name": {"type": "string"}},
+            "properties": {"name": {"type": "string", "enum": ALLOWED_ACTION_NAMES}},
             "required": ["name"],
         },
     },
@@ -260,6 +275,20 @@ class AIPlanner:
 
         if "thought" not in decision or "action" not in decision:
             raise ValueError(f"Response JSON from '{model_name}' is missing 'thought' or 'action' key.")
+
+        # The json_schema enum only gets enforced when the server actually
+        # honors schema-constrained output (see _create_completion) -- the
+        # json_object fallback mode has no such constraint, so a model can
+        # still put anything at all in action.name there (seen in practice:
+        # a full sentence instead of "navigate"). Check it here too so that
+        # case also triggers the corrective retry below instead of silently
+        # reaching executor.py's "Unknown action proposed" dead end.
+        action_name = (decision.get("action") or {}).get("name")
+        if action_name not in ALLOWED_ACTION_NAMES:
+            raise ValueError(
+                f"Response JSON from '{model_name}' has an unrecognized action.name: {action_name!r}. "
+                f"Must be one of: {ALLOWED_ACTION_NAMES}."
+            )
 
         return decision
 

@@ -9,7 +9,13 @@ import json
 
 import pytest
 
-from app.planner.planner import AIPlanner, clean_json_string, repair_json_string
+from app.planner.planner import (
+    ALLOWED_ACTION_NAMES,
+    AIPlanner,
+    DECISION_JSON_SCHEMA,
+    clean_json_string,
+    repair_json_string,
+)
 
 
 class _FakeMessage:
@@ -272,6 +278,46 @@ def test_create_completion_skips_schema_probe_once_marked_unsupported():
 
     assert len(calls) == 1
     assert calls[0]["response_format"]["type"] == "json_object"
+
+
+def test_decision_json_schema_constrains_action_name_to_allowed_enum():
+    # Guards against the schema and ALLOWED_ACTION_NAMES silently drifting
+    # apart -- the enum in the schema sent to Ollama has to actually be this
+    # list, not a hand-copied duplicate of it.
+    assert DECISION_JSON_SCHEMA["properties"]["action"]["properties"]["name"]["enum"] == ALLOWED_ACTION_NAMES
+
+
+def test_call_model_rejects_hallucinated_action_name(monkeypatch):
+    """Seen in practice: with only {"type": "json_object"} (no enum
+    constraint), a struggling model can put an entire rambling sentence in
+    action.name instead of one of the real action names -- syntactically
+    valid JSON, so it used to sail straight through to executor.py's
+    'Unknown action proposed' dead end. _call_model should catch that itself
+    so plan_next_step's corrective retry kicks in instead."""
+    planner = AIPlanner(base_url="http://127.0.0.1:1/v1", model="primary-model")
+
+    def fake_create_completion(model_name, messages):
+        return _FakeResponse(json.dumps({
+            "thought": "rambling",
+            "action": {"name": "navigating across browsers and devices -- a brief overview of..."},
+        }))
+
+    monkeypatch.setattr(AIPlanner, "_create_completion", lambda self, m, msgs: fake_create_completion(m, msgs))
+
+    with pytest.raises(ValueError, match="unrecognized action.name"):
+        planner._call_model("primary-model", [{"role": "user", "content": "hi"}])
+
+
+def test_call_model_accepts_every_allowed_action_name(monkeypatch):
+    planner = AIPlanner(base_url="http://127.0.0.1:1/v1", model="primary-model")
+
+    for name in ALLOWED_ACTION_NAMES:
+        def fake_create_completion(model_name, messages, name=name):
+            return _FakeResponse(json.dumps({"thought": "ok", "action": {"name": name}}))
+
+        monkeypatch.setattr(AIPlanner, "_create_completion", lambda self, m, msgs, fc=fake_create_completion: fc(m, msgs))
+        decision = planner._call_model("primary-model", [{"role": "user", "content": "hi"}])
+        assert decision["action"]["name"] == name
 
 
 def test_planner_reports_every_model_tried_when_all_fail(monkeypatch):
