@@ -18,7 +18,7 @@ import re
 import logging
 import httpx
 from openai import OpenAI
-from app.config import OLLAMA_BASE_URL, OLLAMA_MODEL
+from app.config import OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_FALLBACK_MODELS
 
 logger = logging.getLogger(__name__)
 
@@ -126,9 +126,15 @@ def repair_json_string(text: str) -> str:
 
 
 class AIPlanner:
-    def __init__(self, base_url: str = None, model: str = None):
+    def __init__(self, base_url: str = None, model: str = None, fallback_models: list = None):
         self.base_url = base_url or OLLAMA_BASE_URL
         self.model = model or OLLAMA_MODEL
+        # Extra models tried, in order, through this same Ollama server if
+        # `self.model` fails to respond or returns unparseable output --
+        # e.g. a Gemma model as a second opinion when the primary model is
+        # struggling. Off by default (see OLLAMA_FALLBACK_MODELS in config.py);
+        # each has to already be pulled locally, same as the primary model.
+        self.fallback_models = fallback_models if fallback_models is not None else OLLAMA_FALLBACK_MODELS
         # Ollama's OpenAI-compatible endpoint ignores the API key entirely,
         # but the client library requires *something* non-empty to be passed.
         #
@@ -145,8 +151,43 @@ class AIPlanner:
             http_client=httpx.Client(trust_env=False),
         )
 
+    def _call_model(self, model_name: str, messages: list) -> dict:
+        """Calls one model and returns a parsed {"thought", "action"} dict.
+        Raises on any failure (connection, malformed JSON that survives
+        repair, missing keys) -- the caller decides what to do next."""
+        response = self.client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+        response_text = response.choices[0].message.content
+
+        cleaned_json = clean_json_string(response_text)
+        try:
+            decision = json.loads(cleaned_json)
+        except json.JSONDecodeError:
+            # Small local models occasionally emit syntactically invalid
+            # JSON -- most often a raw newline inside the "thought" string,
+            # or a trailing comma. Try a heuristic repair before giving up.
+            try:
+                decision = json.loads(repair_json_string(cleaned_json))
+            except json.JSONDecodeError:
+                logger.error(f"Raw response from '{model_name}' that failed to parse: {response_text!r}")
+                raise
+
+        if "thought" not in decision or "action" not in decision:
+            raise ValueError(f"Response JSON from '{model_name}' is missing 'thought' or 'action' key.")
+
+        return decision
+
     def plan_next_step(self, objective: str, current_url: str, page_title: str, page_map: str, history: list) -> dict:
-        """Determines the next action to perform using the local model."""
+        """Determines the next action to perform. Tries `self.model` first,
+        then falls through `self.fallback_models` in order if a model fails
+        to respond or keeps returning unusable output -- e.g. a Gemma model
+        pulled locally as a second opinion when the primary model is
+        struggling. Only after every model in the chain has failed does this
+        return a safe 'wait' action instead of crashing the task loop."""
         history_lines = []
         for step in history:
             history_lines.append(f"Step {step['step']}: Action: {step['action_type']} | Details: {step['description']}")
@@ -167,45 +208,30 @@ ACTION HISTORY:
 
 Provide the next thought and action in JSON format.
 """
-        logger.info(f"Planning next step with local model '{self.model}' at {self.base_url}.")
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
 
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.2,
-            )
-            response_text = response.choices[0].message.content
+        models_to_try = [self.model] + self.fallback_models
+        last_error = None
 
-            cleaned_json = clean_json_string(response_text)
+        for model_name in models_to_try:
+            logger.info(f"Planning next step with local model '{model_name}' at {self.base_url}.")
             try:
-                decision = json.loads(cleaned_json)
-            except json.JSONDecodeError:
-                # qwen2.5:3b occasionally emits syntactically invalid JSON --
-                # most often a raw newline inside the "thought" string, or a
-                # trailing comma. Try a heuristic repair before giving up.
-                decision = json.loads(repair_json_string(cleaned_json))
+                return self._call_model(model_name, messages)
+            except Exception as e:
+                last_error = e
+                logger.error(f"Error calling local model '{model_name}' at {self.base_url}: {e}")
 
-            if "thought" not in decision or "action" not in decision:
-                raise ValueError("Response JSON is missing 'thought' or 'action' key.")
-
-            return decision
-
-        except Exception as e:
-            logger.error(f"Error calling local model at {self.base_url}: {e}")
-            if 'response_text' in locals():
-                logger.error(f"Raw model response that failed to parse: {response_text!r}")
-            return {
-                "thought": (
-                    f"An error occurred while calling the local model: {str(e)}. "
-                    f"Is Ollama running (`ollama serve`) with '{self.model}' pulled? I will wait and retry."
-                ),
-                "action": {
-                    "name": "wait",
-                    "seconds": 5,
-                },
-            }
+        tried = "', '".join(models_to_try)
+        return {
+            "thought": (
+                f"An error occurred while calling the local model: {last_error}. "
+                f"Is Ollama running (`ollama serve`) with '{tried}' pulled? I will wait and retry."
+            ),
+            "action": {
+                "name": "wait",
+                "seconds": 5,
+            },
+        }

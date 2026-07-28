@@ -81,6 +81,7 @@ copy .env.example .env
 The defaults work out of the box as long as Ollama is running with the model pulled. Relevant values:
 - `OLLAMA_BASE_URL`: Ollama's OpenAI-compatible endpoint (default `http://localhost:11434/v1`).
 - `OLLAMA_MODEL`: which model to use (default `qwen2.5:3b`).
+- `OLLAMA_FALLBACK_MODELS`: optional comma-separated list of other models to try, in order, if `OLLAMA_MODEL` fails to respond or keeps returning unusable output -- e.g. `OLLAMA_FALLBACK_MODELS=gemma2:2b`. Still served by the same local Ollama instance; each model needs to be pulled first. Empty by default (disabled).
 - `BROWSER_HEADLESS`: `True` to run tasks in the background, `False` to see the Chromium window.
 
 ### Step 5: Build the Dashboard

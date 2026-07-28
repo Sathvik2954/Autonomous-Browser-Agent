@@ -77,3 +77,65 @@ def test_repair_json_string_strips_trailing_comma():
 def test_repair_json_string_leaves_valid_json_unchanged_in_effect():
     valid = '{"thought": "hi", "action": {"name": "wait", "seconds": 1}}'
     assert json.loads(repair_json_string(valid)) == json.loads(valid)
+
+
+def test_planner_has_no_fallback_models_by_default():
+    planner = AIPlanner(base_url="http://127.0.0.1:1/v1", model="does-not-matter")
+    assert planner.fallback_models == []
+
+
+def test_planner_falls_through_to_fallback_model_when_primary_fails(monkeypatch):
+    """If the primary model errors out (bad response, model not pulled, etc.),
+    the planner should try each configured fallback model, in order, through
+    the same Ollama server before giving up."""
+    planner = AIPlanner(
+        base_url="http://127.0.0.1:1/v1",
+        model="primary-model",
+        fallback_models=["fallback-model"],
+    )
+
+    calls = []
+
+    def fake_call_model(self, model_name, messages):
+        calls.append(model_name)
+        if model_name == "primary-model":
+            raise RuntimeError("primary model is down")
+        return {"thought": "answered by fallback", "action": {"name": "wait", "seconds": 1}}
+
+    monkeypatch.setattr(AIPlanner, "_call_model", fake_call_model)
+
+    decision = planner.plan_next_step(
+        objective="test objective",
+        current_url="https://example.com",
+        page_title="Example",
+        page_map="[button-1] (BUTTON) text: \"Click me\"",
+        history=[],
+    )
+
+    assert calls == ["primary-model", "fallback-model"]
+    assert decision["thought"] == "answered by fallback"
+
+
+def test_planner_reports_every_model_tried_when_all_fail(monkeypatch):
+    planner = AIPlanner(
+        base_url="http://127.0.0.1:1/v1",
+        model="primary-model",
+        fallback_models=["fallback-model"],
+    )
+
+    def fake_call_model(self, model_name, messages):
+        raise RuntimeError(f"{model_name} is down")
+
+    monkeypatch.setattr(AIPlanner, "_call_model", fake_call_model)
+
+    decision = planner.plan_next_step(
+        objective="test objective",
+        current_url="https://example.com",
+        page_title="Example",
+        page_map="[button-1] (BUTTON) text: \"Click me\"",
+        history=[],
+    )
+
+    assert decision["action"]["name"] == "wait"
+    assert "primary-model" in decision["thought"]
+    assert "fallback-model" in decision["thought"]

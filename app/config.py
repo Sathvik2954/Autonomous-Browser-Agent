@@ -29,6 +29,15 @@ DB_PATH = LOGS_DIR / "agent.db"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
 
+# Optional fallback models, tried in order (still through the same local
+# Ollama server -- e.g. a Gemma model) if OLLAMA_MODEL fails to respond or
+# returns unparseable output. Comma-separated, empty by default (off unless
+# you opt in). Each one has to be pulled locally first, same as OLLAMA_MODEL:
+# `ollama pull gemma2:2b`. See app/planner/planner.py for the fallback logic.
+OLLAMA_FALLBACK_MODELS = [
+    m.strip() for m in os.getenv("OLLAMA_FALLBACK_MODELS", "").split(",") if m.strip()
+]
+
 # Browser Configurations
 BROWSER_HEADLESS = os.getenv("BROWSER_HEADLESS", "False").lower() in ("true", "1", "yes")
 BROWSER_TIMEOUT = int(os.getenv("BROWSER_TIMEOUT", "30000"))
