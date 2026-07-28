@@ -12,6 +12,21 @@ import pytest
 from app.planner.planner import AIPlanner, clean_json_string, repair_json_string
 
 
+class _FakeMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+class _FakeChoice:
+    def __init__(self, content):
+        self.message = _FakeMessage(content)
+
+
+class _FakeResponse:
+    def __init__(self, content):
+        self.choices = [_FakeChoice(content)]
+
+
 def test_clean_json_string_handles_plain_json():
     raw = '{"thought": "hi", "action": {"name": "wait", "seconds": 1}}'
     assert clean_json_string(raw) == raw
@@ -190,6 +205,73 @@ def test_planner_trims_history_to_recent_steps(monkeypatch):
     assert "5 earlier step(s) omitted for brevity" in prompt
     assert "Clicked thing 4" not in prompt  # trimmed away
     assert f"Clicked thing {MAX_HISTORY_STEPS + 4}" in prompt  # most recent kept
+
+
+def test_create_completion_tries_json_schema_first_and_marks_it_supported():
+    """A loose json_object response_format only guarantees *some* valid JSON,
+    not the right keys -- json_schema constrains generation at the grammar
+    level to actually contain "thought"/"action". This is what should be
+    tried first, on a server that accepts it."""
+    planner = AIPlanner(base_url="http://127.0.0.1:1/v1", model="primary-model")
+    calls = []
+
+    def fake_create(**kwargs):
+        calls.append(kwargs)
+        return _FakeResponse('{"thought": "hi", "action": {"name": "wait", "seconds": 1}}')
+
+    planner.client.chat.completions.create = fake_create
+
+    response = planner._create_completion("primary-model", [{"role": "user", "content": "hi"}])
+
+    assert len(calls) == 1
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert planner._json_schema_supported is True
+    assert response.choices[0].message.content.startswith("{")
+
+
+def test_create_completion_falls_back_to_json_object_when_schema_rejected():
+    """If the server rejects the schema-typed request outright (e.g. an
+    older Ollama version), retry once in the looser json_object mode rather
+    than failing the whole call -- and remember not to try schema mode again
+    for the rest of this planner's lifetime."""
+    planner = AIPlanner(base_url="http://127.0.0.1:1/v1", model="primary-model")
+    calls = []
+
+    def fake_create(**kwargs):
+        calls.append(kwargs)
+        if kwargs["response_format"]["type"] == "json_schema":
+            raise RuntimeError("400 Bad Request: unknown parameter 'json_schema'")
+        return _FakeResponse('{"thought": "hi", "action": {"name": "wait", "seconds": 1}}')
+
+    planner.client.chat.completions.create = fake_create
+
+    response = planner._create_completion("primary-model", [{"role": "user", "content": "hi"}])
+
+    assert len(calls) == 2
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert calls[1]["response_format"]["type"] == "json_object"
+    assert planner._json_schema_supported is False
+    assert response.choices[0].message.content.startswith("{")
+
+
+def test_create_completion_skips_schema_probe_once_marked_unsupported():
+    """Once a call has established the server doesn't support schema mode,
+    later calls shouldn't pay for a doomed schema attempt on every single
+    step -- go straight to json_object."""
+    planner = AIPlanner(base_url="http://127.0.0.1:1/v1", model="primary-model")
+    planner._json_schema_supported = False
+    calls = []
+
+    def fake_create(**kwargs):
+        calls.append(kwargs)
+        return _FakeResponse('{"thought": "hi", "action": {"name": "wait", "seconds": 1}}')
+
+    planner.client.chat.completions.create = fake_create
+
+    planner._create_completion("primary-model", [{"role": "user", "content": "hi"}])
+
+    assert len(calls) == 1
+    assert calls[0]["response_format"]["type"] == "json_object"
 
 
 def test_planner_reports_every_model_tried_when_all_fail(monkeypatch):

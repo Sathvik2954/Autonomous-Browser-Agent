@@ -93,6 +93,30 @@ def clean_json_string(response_text: str) -> str:
     return response_text
 
 
+# A loose response_format={"type": "json_object"} only constrains the model
+# to emit *some* valid JSON -- it says nothing about which keys to use, so a
+# small model is free to (and in practice often does) return syntactically
+# valid JSON with entirely made-up keys instead of "thought"/"action". This
+# schema is used with response_format={"type": "json_schema", ...} instead,
+# which -- where the server supports it -- constrains generation at the
+# grammar level to actually contain these keys, not just hope the model
+# follows the prompt's instructions. "action" is deliberately left loose
+# beyond requiring a "name" string, since its shape varies by action type
+# (see the allowed-actions list in SYSTEM_PROMPT).
+DECISION_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "thought": {"type": "string"},
+        "action": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    },
+    "required": ["thought", "action"],
+}
+
+
 def repair_json_string(text: str) -> str:
     """Best-effort fix for the two malformed-JSON patterns small local models
     produce most often:
@@ -164,17 +188,61 @@ class AIPlanner:
             api_key="ollama",
             http_client=httpx.Client(trust_env=False),
         )
+        # Whether this Ollama server accepts JSON-Schema-constrained output
+        # (response_format={"type": "json_schema", ...}). Unknown (None)
+        # until the first call; if the server rejects that request shape,
+        # this is set to False and every call for the rest of this planner's
+        # lifetime uses the looser json_object mode instead of re-probing
+        # (and re-failing) on every single step.
+        self._json_schema_supported = None
+
+    def _response_format(self, use_schema: bool) -> dict:
+        if use_schema:
+            return {
+                "type": "json_schema",
+                "json_schema": {"name": "browser_agent_decision", "schema": DECISION_JSON_SCHEMA},
+            }
+        return {"type": "json_object"}
+
+    def _create_completion(self, model_name: str, messages: list):
+        """Calls the chat completion endpoint. Only this method, not JSON
+        parsing/validation below, decides whether schema-constrained output
+        is usable -- a schema-format request gets rejected immediately by
+        the server (an API-level error) before generation even starts, which
+        is a different failure than the model generating badly-shaped JSON
+        despite the schema being accepted. Conflating the two would wrongly
+        write off schema support over a content problem, not a format one."""
+        use_schema = self._json_schema_supported is not False
+        try:
+            response = self.client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                response_format=self._response_format(use_schema),
+                temperature=0.2,
+            )
+            if use_schema and self._json_schema_supported is None:
+                self._json_schema_supported = True
+            return response
+        except Exception as e:
+            if not use_schema:
+                raise
+            logger.warning(
+                f"'{model_name}' rejected JSON-schema-constrained output ({e}); "
+                "falling back to looser json_object mode for the rest of this task."
+            )
+            self._json_schema_supported = False
+            return self.client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                response_format=self._response_format(False),
+                temperature=0.2,
+            )
 
     def _call_model(self, model_name: str, messages: list) -> dict:
         """Calls one model and returns a parsed {"thought", "action"} dict.
         Raises on any failure (connection, malformed JSON that survives
         repair, missing keys) -- the caller decides what to do next."""
-        response = self.client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-            response_format={"type": "json_object"},
-            temperature=0.2,
-        )
+        response = self._create_completion(model_name, messages)
         response_text = response.choices[0].message.content
 
         cleaned_json = clean_json_string(response_text)
