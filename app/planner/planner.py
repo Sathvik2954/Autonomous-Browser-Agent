@@ -22,6 +22,20 @@ from app.config import OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_FALLBACK_MODELS
 
 logger = logging.getLogger(__name__)
 
+# How many of the most recent action-history entries to include in the
+# prompt. Full history grows every step (browser start, each navigate/click/
+# search/extract...), and an unbounded prompt is a big part of why a small
+# local model's output quality falls off a cliff a few steps into a task --
+# the tail of a long task is also where "recent" matters most for deciding
+# what to do next, so trimming to the tail loses little.
+MAX_HISTORY_STEPS = 10
+
+# How long a single history entry's description can be before truncation.
+# web_search results in particular can dump several lines of title/url/
+# snippet per result into one "description", which compounds fast across
+# multiple search steps.
+MAX_HISTORY_ENTRY_CHARS = 300
+
 SYSTEM_PROMPT = """
 You are an autonomous browser agent. Your goal is to achieve the user's objective by executing actions on a web browser step-by-step.
 At each step, you will be given:
@@ -188,9 +202,17 @@ class AIPlanner:
         pulled locally as a second opinion when the primary model is
         struggling. Only after every model in the chain has failed does this
         return a safe 'wait' action instead of crashing the task loop."""
+        recent_history = history[-MAX_HISTORY_STEPS:]
+        omitted = len(history) - len(recent_history)
+
         history_lines = []
-        for step in history:
-            history_lines.append(f"Step {step['step']}: Action: {step['action_type']} | Details: {step['description']}")
+        if omitted > 0:
+            history_lines.append(f"[{omitted} earlier step(s) omitted for brevity]")
+        for step in recent_history:
+            description = step['description'] or ""
+            if len(description) > MAX_HISTORY_ENTRY_CHARS:
+                description = description[:MAX_HISTORY_ENTRY_CHARS] + "... [truncated]"
+            history_lines.append(f"Step {step['step']}: Action: {step['action_type']} | Details: {description}")
         history_text = "\n".join(history_lines) if history_lines else "None yet."
 
         prompt = f"""
@@ -217,12 +239,30 @@ Provide the next thought and action in JSON format.
         last_error = None
 
         for model_name in models_to_try:
-            logger.info(f"Planning next step with local model '{model_name}' at {self.base_url}.")
-            try:
-                return self._call_model(model_name, messages)
-            except Exception as e:
-                last_error = e
-                logger.error(f"Error calling local model '{model_name}' at {self.base_url}: {e}")
+            current_messages = messages
+            # Two attempts per model: the original prompt, then -- if that
+            # came back as valid-but-wrong-shape JSON (the dominant failure
+            # mode in practice: a small model returning syntactically valid
+            # JSON with the wrong keys entirely) -- one corrective retry that
+            # shows the model exactly what was wrong before giving up on it
+            # and moving to the next model in the chain.
+            for attempt in range(2):
+                retry_note = " (retry after invalid response)" if attempt else ""
+                logger.info(f"Planning next step with local model '{model_name}' at {self.base_url}{retry_note}.")
+                try:
+                    return self._call_model(model_name, current_messages)
+                except Exception as e:
+                    last_error = e
+                    logger.error(f"Error calling local model '{model_name}' at {self.base_url}: {e}")
+                    if attempt == 0:
+                        current_messages = messages + [{
+                            "role": "user",
+                            "content": (
+                                f"Your last response was invalid: {e}. Reply again with ONLY a single "
+                                "valid JSON object containing exactly two keys, \"thought\" and \"action\", "
+                                "matching the schema and example shown in the system prompt. No other text."
+                            ),
+                        }]
 
         tried = "', '".join(models_to_try)
         return {

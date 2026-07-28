@@ -128,11 +128,23 @@ async def extract_interactive_elements(page: Page) -> list:
         logger.error(f"Error extracting interactive elements: {e}")
         return []
 
-def generate_page_map(elements: list) -> str:
-    """Formats elements list into a clean, text-based interactive map for the LLM."""
+def generate_page_map(elements: list, max_elements: int = 50) -> str:
+    """Formats elements list into a clean, text-based interactive map for the LLM.
+
+    Capped at `max_elements` -- a busy page (search results, a long nav menu)
+    can easily have 150+ interactive elements, and an uncapped list bloats
+    the prompt step after step as the agent revisits similar pages. Small
+    local models are especially prone to losing the plot (garbled or
+    off-schema JSON) once the prompt gets long, so this trades completeness
+    for keeping the model's context focused on what it can actually reason
+    about reliably."""
     if not elements:
         return "No interactive elements found on the page."
-        
+
+    total_count = len(elements)
+    truncated = total_count > max_elements
+    elements = elements[:max_elements]
+
     lines = []
     for el in elements:
         details = []
@@ -150,5 +162,8 @@ def generate_page_map(elements: list) -> str:
         details_str = ", ".join(details)
         elem_desc = f"[{el['id']}] ({el['type'].upper()}) {details_str}"
         lines.append(elem_desc)
-        
+
+    if truncated:
+        lines.append(f"... and {total_count - max_elements} more elements not shown (scroll to see them).")
+
     return "\n".join(lines)
