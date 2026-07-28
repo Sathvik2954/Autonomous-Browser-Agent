@@ -16,10 +16,16 @@ logs/*.log
 logs/agent.db
 logs/organizer_renames.json
 
-# Screenshots, video sessions, and reports output folders
-screenshots/
-sessions/
-reports/
+# Screenshots, video sessions, and reports output folders -- anchored to the
+# repo root (leading /) so these don't also match same-named *source*
+# directories elsewhere in the tree. This bit us for real: an unanchored
+# "reports/" here was silently matching app/reports/ too, which meant
+# app/reports/report.py was NEVER committed -- a fresh clone of this repo
+# would have been missing the whole report-generation module and failed to
+# start the moment anything imported it.
+/screenshots/
+/sessions/
+/reports/
 
 # Editor and OS settings
 .vscode/

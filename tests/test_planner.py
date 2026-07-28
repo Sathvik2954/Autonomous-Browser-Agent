@@ -13,6 +13,7 @@ from app.planner.planner import (
     ALLOWED_ACTION_NAMES,
     AIPlanner,
     DECISION_JSON_SCHEMA,
+    REQUIRED_ACTION_FIELDS,
     clean_json_string,
     repair_json_string,
 )
@@ -312,12 +313,74 @@ def test_call_model_accepts_every_allowed_action_name(monkeypatch):
     planner = AIPlanner(base_url="http://127.0.0.1:1/v1", model="primary-model")
 
     for name in ALLOWED_ACTION_NAMES:
-        def fake_create_completion(model_name, messages, name=name):
-            return _FakeResponse(json.dumps({"thought": "ok", "action": {"name": name}}))
+        # Any action with entries in REQUIRED_ACTION_FIELDS needs those
+        # fields populated too, or _call_model correctly rejects it (that's
+        # exactly what the dedicated required-field tests below check) --
+        # this test is only about action.name itself being accepted.
+        action = {"name": name}
+        for field in REQUIRED_ACTION_FIELDS.get(name, []):
+            action[field] = "placeholder"
+
+        def fake_create_completion(model_name, messages, action=action):
+            return _FakeResponse(json.dumps({"thought": "ok", "action": action}))
 
         monkeypatch.setattr(AIPlanner, "_create_completion", lambda self, m, msgs, fc=fake_create_completion: fc(m, msgs))
         decision = planner._call_model("primary-model", [{"role": "user", "content": "hi"}])
         assert decision["action"]["name"] == name
+
+
+def test_call_model_rejects_navigate_action_with_missing_url(monkeypatch):
+    """Seen in practice: a valid action.name ("navigate") with no "url" field
+    at all -- structurally fine JSON, but executor.py had nothing to
+    navigate to and tried browser.navigate("") three times in a row before
+    giving up. This should be caught here, before it ever reaches the
+    browser, and trigger the corrective retry instead."""
+    planner = AIPlanner(base_url="http://127.0.0.1:1/v1", model="primary-model")
+
+    def fake_create_completion(model_name, messages):
+        return _FakeResponse(json.dumps({"thought": "go somewhere", "action": {"name": "navigate"}}))
+
+    monkeypatch.setattr(AIPlanner, "_create_completion", lambda self, m, msgs: fake_create_completion(m, msgs))
+
+    with pytest.raises(ValueError, match="missing required field"):
+        planner._call_model("primary-model", [{"role": "user", "content": "hi"}])
+
+
+def test_call_model_rejects_navigate_action_with_blank_url(monkeypatch):
+    """An empty-string "url" is exactly as unusable as a missing one -- both
+    should be treated the same, not just a literally-absent key."""
+    planner = AIPlanner(base_url="http://127.0.0.1:1/v1", model="primary-model")
+
+    def fake_create_completion(model_name, messages):
+        return _FakeResponse(json.dumps({"thought": "go somewhere", "action": {"name": "navigate", "url": "   "}}))
+
+    monkeypatch.setattr(AIPlanner, "_create_completion", lambda self, m, msgs: fake_create_completion(m, msgs))
+
+    with pytest.raises(ValueError, match="missing required field"):
+        planner._call_model("primary-model", [{"role": "user", "content": "hi"}])
+
+
+def test_call_model_accepts_navigate_action_with_url_present():
+    planner = AIPlanner(base_url="http://127.0.0.1:1/v1", model="primary-model")
+    planner._create_completion = lambda m, msgs: _FakeResponse(
+        json.dumps({"thought": "go somewhere", "action": {"name": "navigate", "url": "https://example.com"}})
+    )
+    decision = planner._call_model("primary-model", [{"role": "user", "content": "hi"}])
+    assert decision["action"]["url"] == "https://example.com"
+
+
+@pytest.mark.parametrize("action_name,fields", list(REQUIRED_ACTION_FIELDS.items()))
+def test_call_model_rejects_every_required_action_field_when_missing(action_name, fields):
+    """Table-driven version of the navigate/url case above, covering every
+    entry in REQUIRED_ACTION_FIELDS (web_search/query, click/element_id,
+    type/element_id+text) so a future addition to that dict is automatically
+    covered here too."""
+    planner = AIPlanner(base_url="http://127.0.0.1:1/v1", model="primary-model")
+    planner._create_completion = lambda m, msgs: _FakeResponse(
+        json.dumps({"thought": "doing it", "action": {"name": action_name}})
+    )
+    with pytest.raises(ValueError, match="missing required field"):
+        planner._call_model("primary-model", [{"role": "user", "content": "hi"}])
 
 
 def test_planner_reports_every_model_tried_when_all_fail(monkeypatch):
