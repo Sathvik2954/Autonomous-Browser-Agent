@@ -20,16 +20,9 @@ class BrowserController:
     async def start(self):
         """Starts Playwright and launches the browser context."""
         self.playwright = await async_playwright().start()
-        
-        # Launch options
-        launch_args = []
-        
-        self.browser = await self.playwright.chromium.launch(
-            headless=self.headless,
-            args=launch_args
-        )
-        
-        # Context options (video, viewport)
+
+        self.browser = await self.playwright.chromium.launch(headless=self.headless)
+
         context_args = {
             "viewport": {"width": 1280, "height": 720},
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -109,7 +102,6 @@ class BrowserController:
 
     async def click(self, selector: str):
         """Clicks an element matching the selector."""
-        # Wait for element to be visible/attached
         element = self.page.locator(selector)
         await element.scroll_into_view_if_needed()
         await element.click(timeout=10000)
@@ -149,8 +141,7 @@ class BrowserController:
             return ""
         if not name:
             name = f"{uuid.uuid4().hex}.png"
-        
-        # Ensure it has .png extension
+
         if not name.endswith(".png"):
             name += ".png"
             

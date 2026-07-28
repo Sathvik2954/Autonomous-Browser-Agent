@@ -1,10 +1,10 @@
-# Autonomous Browser Agent (ABA)
+# Wisp
 
-This repository contains the Autonomous Browser Agent, developed as a submission for the HackWeek 2026 Competition. The agent uses FastAPI, Playwright, and a **local** LLM (served by Ollama) to complete browser and file-organizing tasks from natural language prompts -- no cloud API keys required.
+This repository contains Wisp, developed as a submission for the HackWeek 2026 Competition. The agent uses FastAPI, Playwright, and a **local** LLM (served by Ollama) to complete browser and file-organizing tasks from natural language prompts -- no cloud API keys required.
 
 ## Project Overview
 
-ABA takes a plain-language instruction and routes it to one of two engines:
+Wisp takes a plain-language instruction and routes it to one of two engines:
 
 - **Browser tasks** -- reads the current page, catalogs interactive elements, asks a local model what to do next, and acts. It replans at every step, so it adapts to dynamic pages, overlays, and unexpected transitions instead of following a fixed script.
 - **Organizer tasks** -- scans a local folder for generically-named Word documents (`doc1.docx`, `Untitled.docx`, etc.) and renames them based on their actual content, entirely offline.
@@ -45,7 +45,7 @@ The frontend dashboard talks to a FastAPI backend. Submitting a prompt creates a
 
 ### Prerequisites
 - Python 3.10 or higher
-- Node.js (for the frontend, if you're rebuilding it)
+- Node.js (to build the dashboard -- the backend serves it from `frontend/dist`, so it needs to be built at least once)
 - Windows, macOS, or Linux
 - [Ollama](https://ollama.com) installed and running locally
 
@@ -82,6 +82,16 @@ The defaults work out of the box as long as Ollama is running with the model pul
 - `OLLAMA_BASE_URL`: Ollama's OpenAI-compatible endpoint (default `http://localhost:11434/v1`).
 - `OLLAMA_MODEL`: which model to use (default `qwen2.5:3b`).
 - `BROWSER_HEADLESS`: `True` to run tasks in the background, `False` to see the Chromium window.
+
+### Step 5: Build the Dashboard
+The backend serves the dashboard from `frontend/dist`; build it once (and again after pulling any frontend changes):
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
+```
+If `frontend/dist` doesn't exist yet, the backend still runs and the API still works -- it just won't have a dashboard to serve until you build it.
 
 ## Running the Application
 

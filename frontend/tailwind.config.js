@@ -8,31 +8,31 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Light Mode Palette
+        // Light Mode Palette -- warm, friendly palette
         light: {
-          bg: '#F8FAFC',
+          bg: '#FFFBF5',
           card: '#FFFFFF',
-          border: '#E2E8F0',
-          primary: '#2563EB',
-          accent: '#6366F1',
-          success: '#22C55E',
+          border: '#F0E4D4',
+          primary: '#F97316',
+          accent: '#10B981',
+          success: '#10B981',
           warning: '#F59E0B',
           danger: '#EF4444',
-          text: '#0F172A',
-          muted: '#64748B',
+          text: '#292524',
+          muted: '#78716C',
         },
-        // Dark Mode Palette
+        // Dark Mode Palette -- warm, friendly palette
         dark: {
-          bg: '#09090B',
-          card: '#18181B',
-          border: '#27272A',
-          primary: '#60A5FA',
-          accent: '#818CF8',
-          success: '#22C55E',
-          warning: '#F59E0B',
-          danger: '#EF4444',
-          text: '#FAFAFA',
-          muted: '#A1A1AA',
+          bg: '#1C1917',
+          card: '#292524',
+          border: '#44403C',
+          primary: '#FB923C',
+          accent: '#34D399',
+          success: '#34D399',
+          warning: '#FBBF24',
+          danger: '#F87171',
+          text: '#FAFAF9',
+          muted: '#A8A29E',
         }
       },
       borderRadius: {

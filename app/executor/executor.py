@@ -17,10 +17,6 @@ from app.config import BROWSER_RECORD_VIDEO
 
 logger = logging.getLogger(__name__)
 
-# Global cache of latest interactive elements per task, read by the frontend's
-# Developer Console DOM inspector panel.
-latest_interactive_elements = {}
-
 
 async def run_agent_task(task_id: str, prompt: str, provider: str = None, headless: bool = None, resume_context: dict = None):
     """Runs the agent task step-by-step: read the page, ask the local LLM what to
@@ -93,7 +89,6 @@ async def run_agent_task(task_id: str, prompt: str, provider: str = None, headle
                 break
 
             elements = await extract_interactive_elements(page)
-            latest_interactive_elements[task_id] = elements
             page_map = generate_page_map(elements)
             current_url = await browser.get_url()
             page_title = await browser.get_title()

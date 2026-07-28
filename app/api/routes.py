@@ -18,7 +18,7 @@ from app.database import (
     get_logs,
     get_extracted_data
 )
-from app.executor.executor import run_agent_task, latest_interactive_elements
+from app.executor.executor import run_agent_task
 from app.dispatcher import classify_task
 from app.organizer.task_runner import run_organizer_task
 from app.reports.report import generate_markdown_report, export_data_csv, export_data_json
@@ -58,7 +58,6 @@ async def start_task(request: TaskRequest):
 
     task_id = f"task_{uuid.uuid4().hex[:8]}"
 
-    # Write initial record to SQLite
     create_task(task_id, request.prompt)
 
     task_kind = classify_task(request.prompt)
@@ -114,8 +113,6 @@ async def get_task_details(task_id: str):
                 latest_screenshot = f"/api/tasks/{task_id}/screenshot?step={a['step']}"
                 break
                 
-    elements = latest_interactive_elements.get(task_id, [])
-                
     return {
         "task": task,
         "actions": actions,
@@ -123,7 +120,6 @@ async def get_task_details(task_id: str):
         "extracted_data": extracted_data,
         "video_exists": video_exists,
         "latest_screenshot": latest_screenshot,
-        "elements": elements
     }
 
 @router.post("/tasks/{task_id}/stop")

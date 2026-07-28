@@ -2,23 +2,18 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
-# Project root directory
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
-# Output and runtime directories
 SCREENSHOTS_DIR = ROOT_DIR / "screenshots"
 SESSIONS_DIR = ROOT_DIR / "sessions"
 REPORTS_DIR = ROOT_DIR / "reports"
 LOGS_DIR = ROOT_DIR / "logs"
 
-# Ensure directories exist
 for directory in [SCREENSHOTS_DIR, SESSIONS_DIR, REPORTS_DIR, LOGS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
-# Database path
 DB_PATH = LOGS_DIR / "agent.db"
 
 # Local LLM configuration (Ollama's OpenAI-compatible API). No API key, no

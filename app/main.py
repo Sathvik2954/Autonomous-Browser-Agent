@@ -13,9 +13,8 @@ if sys.platform == 'win32':
 
 from app.api.routes import router as api_router
 from app.database import init_db
-from app.config import HOST, PORT
+from app.config import HOST, PORT, ROOT_DIR
 
-# Set up logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -25,7 +24,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Lifespan context manager for startup and shutdown actions
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
@@ -34,13 +32,12 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(
-    title="Autonomous Browser Agent API",
-    description="Backend API for managing AI-driven browser sessions.",
+    title="Wisp API",
+    description="Backend API for Wisp -- a local-LLM agent that browses the web and organizes files.",
     version="1.0.0",
     lifespan=lifespan
 )
 
-# Enable CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -49,24 +46,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include API Router
 app.include_router(api_router)
 
-# Mount Frontend Static files
-import os
-from pathlib import Path
-from app.config import ROOT_DIR
-
+# Serve the built React dashboard. If it hasn't been built yet, skip the
+# mount entirely rather than serving an empty/broken directory -- the API
+# still works, but `npm run build` inside frontend/ is required for the UI.
 react_dist = ROOT_DIR / "frontend" / "dist"
 if react_dist.exists():
-    static_dir = react_dist
-    logger.info(f"Serving production React frontend from {static_dir}")
+    logger.info(f"Serving frontend from {react_dist}")
+    app.mount("/", StaticFiles(directory=str(react_dist), html=True), name="static")
 else:
-    static_dir = Path(__file__).resolve().parent / "static"
-    logger.info(f"Serving fallback static frontend from {static_dir}")
-
-os.makedirs(static_dir, exist_ok=True)
-app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
+    logger.warning(
+        "frontend/dist not found -- the dashboard won't be served until you "
+        "run `npm install && npm run build` inside frontend/."
+    )
 
 if __name__ == "__main__":
     logger.info(f"Starting server on http://{HOST}:{PORT}")
