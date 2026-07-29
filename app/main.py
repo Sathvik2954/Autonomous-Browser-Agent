@@ -1,5 +1,13 @@
+import os
 import sys
 import asyncio
+from pathlib import Path
+
+# Ensure project root directory is in sys.path when running python app/main.py directly
+ROOT_PROJECT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_PROJECT_DIR))
+
 import uvicorn
 import logging
 from contextlib import asynccontextmanager
@@ -71,10 +79,11 @@ if __name__ == "__main__":
     # "changes detected" restarts, which can kill a task mid-run. It also
     # meant edits to tests/, scripts/, or the frontend triggered a backend
     # restart even though nothing the server actually imports had changed.
+    reload_enabled = os.getenv("RELOAD", "False").lower() in ("true", "1", "yes")
     uvicorn.run(
         "app.main:app",
         host=HOST,
         port=PORT,
-        reload=True,
-        reload_dirs=[str(ROOT_DIR / "app")],
+        reload=reload_enabled,
+        reload_dirs=[str(ROOT_DIR / "app")] if reload_enabled else None,
     )

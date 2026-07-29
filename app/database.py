@@ -4,14 +4,25 @@ from datetime import datetime
 from app.config import DB_PATH
 
 def get_db_connection():
-    conn = sqlite3.connect(str(DB_PATH))
+    # Every call site opens its own short-lived connection (add_log/add_action
+    # fire every step from the background task thread, while the API thread
+    # is polling get_task/get_actions/get_logs every ~1.5s from the frontend)
+    # -- default SQLite locking blocks readers during a write and vice versa,
+    # so that access pattern can intermittently raise "database is locked"
+    # under real concurrent use. busy_timeout makes SQLite retry internally
+    # for up to 10s instead of failing immediately; WAL mode (set once in
+    # init_db, since it's a database-level setting) additionally lets reads
+    # proceed without blocking on a concurrent write at all.
+    conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 10000")
     return conn
 
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+    cursor.execute("PRAGMA journal_mode = WAL")
+
     # Tasks table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS tasks (

@@ -101,6 +101,22 @@ ALLOWED_ACTION_NAMES = [
     "web_search", "navigate", "click", "type", "scroll", "wait", "extract", "complete",
 ]
 
+# Fields each action type needs to actually be executable -- constraining
+# action.name to the enum above stops a model from inventing a whole new
+# action, but doesn't stop it picking a real one and leaving out the field
+# that makes it work (seen in practice: {"name": "navigate"} with no "url"
+# at all, which executor.py happily tried anyway and got
+# "Cannot navigate to invalid URL" three times in a row until the task gave
+# up). Only the fields that are genuinely required to do anything meaningful
+# are listed -- e.g. scroll/wait/extract/complete all have sensible defaults
+# for every field in executor.py, so they're intentionally not listed here.
+REQUIRED_ACTION_FIELDS = {
+    "web_search": ["query"],
+    "navigate": ["url"],
+    "click": ["element_id"],
+    "type": ["element_id", "text"],
+}
+
 # A loose response_format={"type": "json_object"} only constrains the model
 # to emit *some* valid JSON -- it says nothing about which keys to use, so a
 # small model is free to (and in practice often does) return syntactically
@@ -201,7 +217,7 @@ class AIPlanner:
         self.client = OpenAI(
             base_url=self.base_url,
             api_key="ollama",
-            http_client=httpx.Client(trust_env=False),
+            http_client=httpx.Client(trust_env=False, timeout=30.0),
         )
         # Whether this Ollama server accepts JSON-Schema-constrained output
         # (response_format={"type": "json_schema", ...}). Unknown (None)
@@ -283,11 +299,26 @@ class AIPlanner:
         # a full sentence instead of "navigate"). Check it here too so that
         # case also triggers the corrective retry below instead of silently
         # reaching executor.py's "Unknown action proposed" dead end.
-        action_name = (decision.get("action") or {}).get("name")
+        action_obj = decision.get("action") or {}
+        action_name = action_obj.get("name")
         if action_name not in ALLOWED_ACTION_NAMES:
             raise ValueError(
                 f"Response JSON from '{model_name}' has an unrecognized action.name: {action_name!r}. "
                 f"Must be one of: {ALLOWED_ACTION_NAMES}."
+            )
+
+        # A valid action *name* doesn't mean the action is actually usable --
+        # see REQUIRED_ACTION_FIELDS above. Treat an empty/whitespace value
+        # the same as a missing key: {"url": ""} is exactly as unusable as no
+        # "url" at all, and is what actually showed up in practice.
+        missing = [
+            field for field in REQUIRED_ACTION_FIELDS.get(action_name, [])
+            if not str(action_obj.get(field, "")).strip()
+        ]
+        if missing:
+            raise ValueError(
+                f"Response JSON from '{model_name}' has action.name={action_name!r} but is missing "
+                f"required field(s): {missing}."
             )
 
         return decision

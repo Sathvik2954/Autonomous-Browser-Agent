@@ -116,7 +116,7 @@ export default function App() {
   const [inspectedStep, setInspectedStep] = useState<number | null>(null);
 
   // Settings
-  const [headless, setHeadless] = useState(false);
+  const [headless, setHeadless] = useState(true);
 
   // General UI state
   const [promptValue, setPromptValue] = useState('');

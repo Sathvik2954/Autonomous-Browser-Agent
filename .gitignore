@@ -12,6 +12,7 @@ ENV/
 
 # Local databases and runtime state logs
 logs/*.db
+logs/*.db.bak-*
 logs/*.log
 logs/agent.db
 logs/organizer_renames.json

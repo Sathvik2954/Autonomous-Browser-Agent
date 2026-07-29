@@ -46,6 +46,19 @@ def run_agent_task_in_thread(task_id: str, prompt: str, provider: str = None, he
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(run_agent_task(task_id, prompt, provider=provider, headless=headless, resume_context=resume_context))
+    except Exception as e:
+        # run_agent_task already has its own broad try/except that marks the
+        # task failed on basically any error -- this is a last-resort net for
+        # something going wrong outside that (e.g. in its own finally block,
+        # or event-loop setup above). Without this, an exception here is a
+        # background thread dying silently: nothing prints anywhere the user
+        # would see, and the task's DB row is stuck on "running" forever,
+        # since update_task_status("failed", ...) never gets called.
+        logger.error(f"Unhandled error running task {task_id}: {e}", exc_info=True)
+        try:
+            update_task_status(task_id, "failed", error=f"Unhandled error: {e}")
+        except Exception:
+            pass
     finally:
         loop.close()
 

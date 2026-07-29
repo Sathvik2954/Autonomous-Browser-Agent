@@ -94,7 +94,8 @@ class BrowserController:
 
     async def navigate(self, url: str):
         """Navigates to the specified URL."""
-        if not url.startswith("http://") and not url.startswith("https://"):
+        url = (url or "").strip()
+        if not url.lower().startswith("http://") and not url.lower().startswith("https://"):
             url = "https://" + url
         await self.page.goto(url, wait_until="load")
         # Wait a small buffer for dynamic DOM rendering

@@ -160,7 +160,29 @@ async def run_agent_task(task_id: str, prompt: str, provider: str = None, headle
                     add_action(task_id=task_id, step=step, action_type="error", description=err_msg, url=current_url)
 
             elif action_name == "navigate":
-                target_url = action_data.get("url", "")
+                target_url = (action_data.get("url") or "").strip()
+
+                if not target_url:
+                    # Belt-and-suspenders: the planner already rejects a
+                    # navigate action with no/empty "url" and asks the model
+                    # to retry (see REQUIRED_ACTION_FIELDS in planner.py),
+                    # but that's model output, not a hard guarantee. Without
+                    # this check, an empty url here becomes browser.navigate
+                    # ("https://") -- Playwright's "Cannot navigate to
+                    # invalid URL" -- three times in a row before the task
+                    # gives up, which is exactly what happened in practice.
+                    err_msg = "Navigate action had no URL to go to -- skipping."
+                    add_log(task_id, err_msg, "warning")
+                    add_action(task_id=task_id, step=step, action_type="error", description=err_msg, url=current_url)
+                    error_count += 1
+                    if error_count >= max_errors:
+                        term_msg = f"Terminating task due to {max_errors} consecutive failures."
+                        add_log(task_id, term_msg, "error")
+                        update_task_status(task_id, "failed", error=term_msg)
+                        break
+                    await asyncio.sleep(1)
+                    continue
+
                 add_log(task_id, f"Action: Navigate to {target_url}", "info")
 
                 try:
@@ -210,6 +232,18 @@ async def run_agent_task(task_id: str, prompt: str, provider: str = None, headle
                     add_log(task_id, err_msg, "warning")
                     add_action(task_id=task_id, step=step, action_type="error", description=err_msg, url=current_url)
                     error_count += 1
+                    if error_count >= max_errors:
+                        # This branch used to "continue" straight back to the
+                        # top of the loop, which skips the centralized
+                        # termination check below entirely -- a model that
+                        # keeps citing element IDs that don't exist on the
+                        # page would never actually hit max_errors, just run
+                        # until max_steps regardless of how many consecutive
+                        # failures piled up.
+                        term_msg = f"Terminating task due to {max_errors} consecutive failures."
+                        add_log(task_id, term_msg, "error")
+                        update_task_status(task_id, "failed", error=term_msg)
+                        break
                     await asyncio.sleep(2)
                     continue
 
@@ -249,36 +283,66 @@ async def run_agent_task(task_id: str, prompt: str, provider: str = None, headle
                     await asyncio.sleep(2)
 
             elif action_name == "scroll":
-                direction = action_data.get("direction", "down")
-                desc = f"Scrolled page {direction}"
-                add_log(task_id, f"Action: {desc}", "info")
-                await browser.scroll(direction=direction)
+                # Unlike every other action branch above, this used to have
+                # no try/except at all -- a Playwright evaluate() failure
+                # here (e.g. the page navigated away mid-scroll) would
+                # propagate all the way up to the outer try/except and end
+                # the whole task, instead of just failing this one step like
+                # a bad click or navigate does.
+                try:
+                    direction = action_data.get("direction", "down")
+                    desc = f"Scrolled page {direction}"
+                    add_log(task_id, f"Action: {desc}", "info")
+                    await browser.scroll(direction=direction)
 
-                screenshot_path = await browser.take_screenshot(name=f"step_{step}_scroll.png")
-                add_action(
-                    task_id=task_id,
-                    step=step,
-                    action_type="scroll",
-                    description=desc,
-                    screenshot_path=screenshot_path,
-                    url=await browser.get_url(),
-                )
+                    screenshot_path = await browser.take_screenshot(name=f"step_{step}_scroll.png")
+                    add_action(
+                        task_id=task_id,
+                        step=step,
+                        action_type="scroll",
+                        description=desc,
+                        screenshot_path=screenshot_path,
+                        url=await browser.get_url(),
+                    )
+                    error_count = 0
+                except Exception as e:
+                    error_count += 1
+                    err_msg = f"Scroll failed: {str(e)}"
+                    add_log(task_id, err_msg, "error")
+                    add_action(task_id=task_id, step=step, action_type="error", description=err_msg, url=current_url)
 
             elif action_name == "wait":
-                secs = float(action_data.get("seconds", 3))
-                desc = f"Waited {secs} seconds"
-                add_log(task_id, f"Action: {desc}", "info")
-                await browser.wait(secs)
+                # Same reasoning as scroll above -- also guards float() here:
+                # if the model ever sends a non-numeric "seconds" (it's a
+                # free-form field, no schema constraint on it), that used to
+                # raise uncaught and kill the whole task over what should be
+                # a harmless step.
+                try:
+                    secs = float(action_data.get("seconds", 3))
+                    desc = f"Waited {secs} seconds"
+                    add_log(task_id, f"Action: {desc}", "info")
+                    await browser.wait(secs)
 
-                screenshot_path = await browser.take_screenshot(name=f"step_{step}_wait.png")
-                add_action(
-                    task_id=task_id,
-                    step=step,
-                    action_type="wait",
-                    description=desc,
-                    screenshot_path=screenshot_path,
-                    url=await browser.get_url(),
-                )
+                    screenshot_path = await browser.take_screenshot(name=f"step_{step}_wait.png")
+                    add_action(
+                        task_id=task_id,
+                        step=step,
+                        action_type="wait",
+                        description=desc,
+                        screenshot_path=screenshot_path,
+                        url=await browser.get_url(),
+                    )
+                    error_count = 0
+                except (ValueError, TypeError) as e:
+                    error_count += 1
+                    err_msg = f"Wait action had an invalid 'seconds' value ({action_data.get('seconds')!r}): {e}"
+                    add_log(task_id, err_msg, "warning")
+                    add_action(task_id=task_id, step=step, action_type="error", description=err_msg, url=current_url)
+                except Exception as e:
+                    error_count += 1
+                    err_msg = f"Wait failed: {str(e)}"
+                    add_log(task_id, err_msg, "error")
+                    add_action(task_id=task_id, step=step, action_type="error", description=err_msg, url=current_url)
 
             else:
                 err_msg = f"Unknown action proposed: {action_name}"
@@ -306,10 +370,6 @@ async def run_agent_task(task_id: str, prompt: str, provider: str = None, headle
         update_task_status(task_id, "failed", error=err_msg)
 
     finally:
-        if headless is False:
-            add_log(task_id, "Task finished in headed mode. Keeping browser window open for 60 seconds for inspection...", "info")
-            await asyncio.sleep(60)
-
         add_log(task_id, "Shutting down browser context...", "info")
         video_path = await browser.stop()
 
