@@ -204,6 +204,56 @@ async def test_scroll_exception_fails_the_step_not_the_whole_task(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_repeated_empty_extract_terminates_early_instead_of_running_to_max_steps(monkeypatch):
+    """Regression test for the real bug seen in practice: a model landing on
+    Google's homepage with nothing useful to click/type into defaults to
+    {"name": "extract"} with no "data", over and over. executor.py used to
+    treat every extract call as an unconditional success (reset error_count,
+    continue) regardless of whether it actually recorded anything, so this
+    ran all the way to max_steps (20) instead of stopping early with a
+    meaningful diagnostic."""
+    task_id = _new_task_id()
+    init_db()
+    create_task(task_id, "find a cheap laptop")
+
+    planner = _install_planner(monkeypatch, [
+        {"thought": "Action", "action": {"name": "extract", "data": {}}}
+        for _ in range(10)
+    ])
+
+    await executor_module.run_agent_task(task_id, "find a cheap laptop")
+
+    task = get_task(task_id)
+    assert task["status"] == "failed"
+    assert "no real progress" in task["error"]
+    # Terminated after 5 consecutive no-op extracts, not after all 10
+    # scripted decisions were exhausted.
+    assert planner.calls <= 6
+
+
+@pytest.mark.asyncio
+async def test_extract_with_real_data_does_not_count_as_stagnant(monkeypatch):
+    """A model that alternates between a real extract and something else
+    should never trip the no-progress termination -- only an *empty* extract
+    is a no-op."""
+    task_id = _new_task_id()
+    init_db()
+    create_task(task_id, "find a cheap laptop")
+
+    _install_planner(monkeypatch, [
+        {"thought": "found it", "action": {"name": "extract", "data": {"price": "$499"}}}
+        for _ in range(6)
+    ])
+
+    await executor_module.run_agent_task(task_id, "find a cheap laptop")
+
+    task = get_task(task_id)
+    # Should run out its scripted plan and hit the fake planner's "complete"
+    # fallback, not the stagnation termination.
+    assert task["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_wait_with_non_numeric_seconds_does_not_crash_task(monkeypatch):
     task_id = _new_task_id()
     init_db()

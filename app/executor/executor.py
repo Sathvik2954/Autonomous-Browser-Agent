@@ -41,6 +41,22 @@ async def run_agent_task(task_id: str, prompt: str, provider: str = None, headle
     error_count = 0
     max_errors = 3
 
+    # Tracks actions that "succeed" but don't actually move the task forward
+    # -- an extract with no data, or a wait. Neither is wrong enough to count
+    # as an error_count failure (they don't raise, executor has nothing to
+    # fail on), but a model repeating either of these step after step is
+    # just as stuck as one that keeps erroring, and left unchecked burns
+    # through every step until max_steps with nothing to show for it (seen
+    # in practice: qwen2.5:3b landing on google.com and calling
+    # {"name": "extract"} with empty data 20 times in a row for both a
+    # "find a laptop on Amazon" and a "look up Wikipedia" task). The planner
+    # now also rejects an empty-data extract outright (see planner.py), but
+    # that only forces one in-step retry -- it doesn't stop the model from
+    # confidently doing the same unproductive thing again next step, so this
+    # is the cross-step backstop.
+    stagnant_count = 0
+    max_stagnant_steps = 5
+
     prior_history = []
     initial_url = "https://www.google.com"
     if resume_context:
@@ -153,6 +169,7 @@ async def run_agent_task(task_id: str, prompt: str, provider: str = None, headle
                         url=await browser.get_url(),
                     )
                     error_count = 0
+                    stagnant_count = 0
                 except SearchError as e:
                     error_count += 1
                     err_msg = f"Web search failed: {e}"
@@ -197,6 +214,7 @@ async def run_agent_task(task_id: str, prompt: str, provider: str = None, headle
                         url=await browser.get_url(),
                     )
                     error_count = 0
+                    stagnant_count = 0
                 except Exception as e:
                     error_count += 1
                     err_msg = f"Failed navigation to {target_url}: {str(e)}"
@@ -207,7 +225,38 @@ async def run_agent_task(task_id: str, prompt: str, provider: str = None, headle
                 element_id = action_data.get("element_id", "")
 
                 if action_name == "extract":
-                    extracted_dict = action_data.get("data", {})
+                    extracted_dict = action_data.get("data") or {}
+
+                    if not extracted_dict:
+                        # planner.py now rejects an empty-data extract and
+                        # asks the model to retry within the same step, but
+                        # that's not a hard guarantee -- if every model in
+                        # the fallback chain still can't produce anything
+                        # better, plan_next_step's last resort is a safe
+                        # {"wait"} action, not this. This branch is the
+                        # backstop for whatever slips through: count it as
+                        # not-progress rather than silently treating it like
+                        # a successful extract (which used to reset
+                        # error_count and let the task loop on this forever).
+                        stagnant_count += 1
+                        err_msg = (
+                            "Extract action had no data -- nothing was recorded. "
+                            "This doesn't count as progress."
+                        )
+                        add_log(task_id, err_msg, "warning")
+                        add_action(task_id=task_id, step=step, action_type="error", description=err_msg, url=current_url)
+                        if stagnant_count >= max_stagnant_steps:
+                            term_msg = (
+                                f"Terminating task: no real progress after {max_stagnant_steps} consecutive "
+                                "no-op actions (empty extract/wait). The local model appears stuck -- try "
+                                "rephrasing the objective, or check that Ollama is producing coherent output."
+                            )
+                            add_log(task_id, term_msg, "error")
+                            update_task_status(task_id, "failed", error=term_msg)
+                            break
+                        await asyncio.sleep(1)
+                        continue
+
                     desc = f"Extracted data properties: {extracted_dict}"
                     add_log(task_id, f"Action: {desc}", "info")
                     add_extracted_data(task_id, extracted_dict)
@@ -222,6 +271,7 @@ async def run_agent_task(task_id: str, prompt: str, provider: str = None, headle
                         url=await browser.get_url(),
                     )
                     error_count = 0
+                    stagnant_count = 0
                     await asyncio.sleep(1)
                     continue
 
@@ -274,6 +324,7 @@ async def run_agent_task(task_id: str, prompt: str, provider: str = None, headle
                         url=await browser.get_url(),
                     )
                     error_count = 0
+                    stagnant_count = 0
 
                 except Exception as e:
                     error_count += 1
@@ -305,6 +356,7 @@ async def run_agent_task(task_id: str, prompt: str, provider: str = None, headle
                         url=await browser.get_url(),
                     )
                     error_count = 0
+                    stagnant_count = 0
                 except Exception as e:
                     error_count += 1
                     err_msg = f"Scroll failed: {str(e)}"
@@ -333,6 +385,23 @@ async def run_agent_task(task_id: str, prompt: str, provider: str = None, headle
                         url=await browser.get_url(),
                     )
                     error_count = 0
+                    # A successful wait isn't an error, but it also isn't
+                    # progress toward the objective -- it's the other half
+                    # of the "always succeeds, never advances anything"
+                    # problem that empty extract has (see stagnant_count
+                    # above). Repeated waits alone would otherwise run out
+                    # the clock on max_steps just like repeated empty
+                    # extracts did.
+                    stagnant_count += 1
+                    if stagnant_count >= max_stagnant_steps:
+                        term_msg = (
+                            f"Terminating task: no real progress after {max_stagnant_steps} consecutive "
+                            "no-op actions (empty extract/wait). The local model appears stuck -- try "
+                            "rephrasing the objective, or check that Ollama is producing coherent output."
+                        )
+                        add_log(task_id, term_msg, "error")
+                        update_task_status(task_id, "failed", error=term_msg)
+                        break
                 except (ValueError, TypeError) as e:
                     error_count += 1
                     err_msg = f"Wait action had an invalid 'seconds' value ({action_data.get('seconds')!r}): {e}"
@@ -352,6 +421,19 @@ async def run_agent_task(task_id: str, prompt: str, provider: str = None, headle
 
             if error_count >= max_errors:
                 err_msg = f"Terminating task due to {max_errors} consecutive failures."
+                add_log(task_id, err_msg, "error")
+                update_task_status(task_id, "failed", error=err_msg)
+                break
+
+            # Centralized backstop, same reasoning as the error_count check
+            # above -- the extract and wait branches already break inline on
+            # this, but this catches any other path that increments
+            # stagnant_count without its own inline check.
+            if stagnant_count >= max_stagnant_steps:
+                err_msg = (
+                    f"Terminating task: no real progress after {max_stagnant_steps} consecutive "
+                    "no-op actions (empty extract/wait)."
+                )
                 add_log(task_id, err_msg, "error")
                 update_task_status(task_id, "failed", error=err_msg)
                 break

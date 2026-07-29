@@ -320,6 +320,11 @@ def test_call_model_accepts_every_allowed_action_name(monkeypatch):
         action = {"name": name}
         for field in REQUIRED_ACTION_FIELDS.get(name, []):
             action[field] = "placeholder"
+        # "extract" isn't in REQUIRED_ACTION_FIELDS (its required-ness is
+        # dict-shaped, not a blank-string check -- see the dedicated
+        # empty-data tests below), but it's still rejected without data.
+        if name == "extract":
+            action["data"] = {"placeholder": "value"}
 
         def fake_create_completion(model_name, messages, action=action):
             return _FakeResponse(json.dumps({"thought": "ok", "action": action}))
@@ -381,6 +386,46 @@ def test_call_model_rejects_every_required_action_field_when_missing(action_name
     )
     with pytest.raises(ValueError, match="missing required field"):
         planner._call_model("primary-model", [{"role": "user", "content": "hi"}])
+
+
+def test_call_model_rejects_extract_action_with_no_data_key(monkeypatch):
+    """Seen in practice: a model landing on Google's homepage with nothing
+    useful to click/type into defaults to {"name": "extract"} with no "data"
+    at all -- structurally valid JSON, action.name is a real action, but it
+    records nothing and (before this check existed) executor.py treated it
+    as an unconditional success, letting the model repeat this forever."""
+    planner = AIPlanner(base_url="http://127.0.0.1:1/v1", model="primary-model")
+
+    def fake_create_completion(model_name, messages):
+        return _FakeResponse(json.dumps({"thought": "Action", "action": {"name": "extract"}}))
+
+    monkeypatch.setattr(AIPlanner, "_create_completion", lambda self, m, msgs: fake_create_completion(m, msgs))
+
+    with pytest.raises(ValueError, match="'data' is empty"):
+        planner._call_model("primary-model", [{"role": "user", "content": "hi"}])
+
+
+def test_call_model_rejects_extract_action_with_empty_data_dict(monkeypatch):
+    """An explicit {"data": {}} is exactly as unusable as omitting "data"
+    entirely -- both should be rejected the same way."""
+    planner = AIPlanner(base_url="http://127.0.0.1:1/v1", model="primary-model")
+
+    def fake_create_completion(model_name, messages):
+        return _FakeResponse(json.dumps({"thought": "Action", "action": {"name": "extract", "data": {}}}))
+
+    monkeypatch.setattr(AIPlanner, "_create_completion", lambda self, m, msgs: fake_create_completion(m, msgs))
+
+    with pytest.raises(ValueError, match="'data' is empty"):
+        planner._call_model("primary-model", [{"role": "user", "content": "hi"}])
+
+
+def test_call_model_accepts_extract_action_with_real_data():
+    planner = AIPlanner(base_url="http://127.0.0.1:1/v1", model="primary-model")
+    planner._create_completion = lambda m, msgs: _FakeResponse(
+        json.dumps({"thought": "found it", "action": {"name": "extract", "data": {"price": "$499"}}})
+    )
+    decision = planner._call_model("primary-model", [{"role": "user", "content": "hi"}])
+    assert decision["action"]["data"] == {"price": "$499"}
 
 
 def test_planner_reports_every_model_tried_when_all_fail(monkeypatch):

@@ -53,7 +53,7 @@ Allowed Actions:
 4. {"name": "type", "element_id": "input-2", "text": "my search text", "press_enter": true} - Fill text into an input field. Set `press_enter` to true if you want to submit right away.
 5. {"name": "scroll", "direction": "down"} - Scroll "down" or "up" on the current page to reveal more content.
 6. {"name": "wait", "seconds": 3} - Pause execution for a few seconds. Useful if a page is loading or processing dynamic requests.
-7. {"name": "extract", "data": {"key": "value", ...}} - Record structured data you've found on the page (e.g. prices, facts, summaries). Call this whenever you see information relevant to the objective.
+7. {"name": "extract", "data": {"key": "value", ...}} - Record structured data you've found on the page (e.g. prices, facts, summaries). Only call this when "data" contains real information you can see right now -- never call it with empty/placeholder data just to have something to do. If the current page doesn't have the information yet, use "web_search", "navigate", "click", or "type" to get to a page that does.
 8. {"name": "complete", "summary": "Detailed summary of findings..."} - Call this when you have successfully completed the user's objective and have extracted the required information. Include the findings directly in the summary.
 
 Formatting Rules:
@@ -319,6 +319,24 @@ class AIPlanner:
             raise ValueError(
                 f"Response JSON from '{model_name}' has action.name={action_name!r} but is missing "
                 f"required field(s): {missing}."
+            )
+
+        # "data" isn't in REQUIRED_ACTION_FIELDS because it's a dict, not a
+        # string -- the generic str(...).strip() check above would treat an
+        # empty {} as "present" (str({}) == "{}", which is non-blank). Seen
+        # in practice: a 3B model landing on Google's homepage with nothing
+        # useful to click/type into defaults to {"name": "extract"} with no
+        # "data" at all, over and over, because it's the only action with no
+        # required inputs -- and since executor.py always treats extract as
+        # a success (it has nothing to fail on), that's an infinite
+        # do-nothing loop that only ends when the task hits max_steps.
+        if action_name == "extract" and not (isinstance(action_obj.get("data"), dict) and action_obj.get("data")):
+            raise ValueError(
+                f"Response JSON from '{model_name}' has action.name='extract' but 'data' is empty. "
+                "An extract action must include the actual information found on the current page as "
+                "key/value pairs (e.g. {\"price\": \"$499\"}). If there's nothing on this page yet to "
+                "extract, use 'web_search', 'navigate', 'click', or 'type' instead -- do not call "
+                "'extract' as a placeholder."
             )
 
         return decision
