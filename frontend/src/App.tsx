@@ -15,9 +15,6 @@ import {
   History as HistoryIcon,
   Settings as SettingsIcon,
   FolderOpen,
-  Search as SearchIcon,
-  BookOpen,
-  Calendar,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -51,12 +48,31 @@ interface TaskRecord {
 
 type Tab = 'run' | 'history' | 'settings';
 
+// Browser tasks (open a site, search, click around, summarize) are
+// disabled -- the local model isn't reliable enough to drive them (see
+// BROWSER_TASKS_DISABLED_MESSAGE in app/api/routes.py). Only organizer
+// tasks (rename/tidy local files) are supported right now, so that's all
+// that should be suggested here.
 const SUGGESTED_PROMPTS = [
-  { title: 'Amazon price search', desc: 'Find the cheapest laptop under 60000 rupees on Amazon.', icon: SearchIcon },
-  { title: 'Wikipedia summary', desc: 'Open Wikipedia, look up Quantum Computing, and summarize it.', icon: BookOpen },
-  { title: 'Form filling demo', desc: 'Open the mock form page and submit appointment inputs.', icon: Calendar },
   { title: 'Organize my Downloads', desc: 'Rename the doc1 files in my Downloads folder based on their content.', icon: FolderOpen },
+  { title: 'Tidy up a folder', desc: 'Organize the files on my Desktop by renaming them based on their content.', icon: FolderOpen },
+  { title: 'Clean up documents', desc: 'Rename the generically-named docx files in my Documents folder.', icon: FolderOpen },
 ];
+
+// FastAPI's HTTPException returns JSON like {"detail": "..."} -- reading
+// the raw response body straight into a toast (the old behavior) showed
+// the user that literal JSON wrapper instead of the message inside it.
+// Falls back to the raw text if the body isn't JSON-shaped for some reason.
+async function friendlyErrorText(response: Response): Promise<string> {
+  const text = await response.text();
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed.detail === 'string') return parsed.detail;
+  } catch {
+    // not JSON -- fall through to the raw text below
+  }
+  return text;
+}
 
 const STATUS_STYLES: Record<string, string> = {
   running: 'bg-[#F59E0B]/15 text-[#B45309] dark:bg-[#FBBF24]/15 dark:text-[#FBBF24]',
@@ -214,7 +230,7 @@ export default function App() {
         setActiveTab('run');
         fetchTaskHistory();
       } else {
-        showToast(`Couldn't start that: ${await response.text()}`, 'error');
+        showToast(`Couldn't start that: ${await friendlyErrorText(response)}`, 'error');
       }
     } catch (e) {
       showToast('Connection to the backend failed', 'error');
@@ -242,7 +258,7 @@ export default function App() {
         setActiveTab('run');
         fetchTaskHistory();
       } else {
-        showToast(`Couldn't resume that: ${await response.text()}`, 'error');
+        showToast(`Couldn't resume that: ${await friendlyErrorText(response)}`, 'error');
       }
     } catch (e) {
       showToast('Connection to the backend failed', 'error');
@@ -384,8 +400,8 @@ export default function App() {
                 <div className="text-center flex flex-col gap-2">
                   <h1 className="text-5xl font-extrabold tracking-tight">Hey! What can I help with?</h1>
                   <p className="text-lg text-[#78716C] dark:text-[#A8A29E]">
-                    I can search the web, compare prices, fill out forms, and tidy up files on your
-                    computer -- just tell me what you need done, in plain language.
+                    I can rename and tidy up generically-named files on your computer based on their
+                    content -- just tell me which folder, in plain language.
                   </p>
                 </div>
 
@@ -393,7 +409,7 @@ export default function App() {
                   <textarea
                     value={promptValue}
                     onChange={e => setPromptValue(e.target.value)}
-                    placeholder="e.g. Search for the cheapest iPhone 15 under Rs 65000 and report prices"
+                    placeholder="e.g. Rename the doc1 files in my Downloads folder based on their content"
                     className="w-full h-28 bg-transparent text-lg p-4 outline-none resize-none font-medium placeholder-[#A8A29E]"
                   />
                   <div className="flex justify-between items-center px-3 py-2 border-t border-[#F0E4D4] dark:border-[#44403C]">

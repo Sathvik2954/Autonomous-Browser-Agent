@@ -62,33 +62,46 @@ def run_agent_task_in_thread(task_id: str, prompt: str, provider: str = None, he
     finally:
         loop.close()
 
+
+# The browser agent (open a site, search, click around, extract/summarize)
+# is disabled: qwen2.5:3b reliably fails to drive it -- it lands on a search
+# page and loops calling extract with no data instead of typing a query,
+# and burns every step doing nothing (confirmed from real task logs; see
+# app/executor/executor.py's stagnant_count). Rather than let people submit
+# tasks that are known not to work and find out 20 steps later, reject them
+# up front. The organizer (rename/tidy local files) is unaffected -- that's
+# plain local file I/O, no browser or multi-step web reasoning involved.
+BROWSER_TASKS_DISABLED_MESSAGE = (
+    "Browser-based tasks (open a website, search, click around, summarize) are "
+    "currently disabled -- the local model isn't reliable enough to drive them "
+    "(it gets stuck on the search page and never finds the information). Try an "
+    "organizer task instead, e.g. \"rename the files in my Downloads folder based "
+    "on their content.\""
+)
+
+
 @router.post("/tasks", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
 async def start_task(request: TaskRequest):
-    """Starts a new task in the background, routed to either the browser
-    agent or the document organizer based on what the prompt is asking for."""
+    """Starts a new task in the background. Only organizer tasks (rename/tidy
+    local files) are supported -- see BROWSER_TASKS_DISABLED_MESSAGE above."""
     if not request.prompt.strip():
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+
+    task_kind = classify_task(request.prompt)
+    if task_kind != "organizer":
+        raise HTTPException(status_code=400, detail=BROWSER_TASKS_DISABLED_MESSAGE)
 
     task_id = f"task_{uuid.uuid4().hex[:8]}"
 
     create_task(task_id, request.prompt)
 
-    task_kind = classify_task(request.prompt)
-
-    if task_kind == "organizer":
-        # Organizer work is synchronous local file I/O -- run it directly in
-        # the background thread, no event loop needed.
-        thread = threading.Thread(
-            target=run_organizer_task,
-            args=(task_id, request.prompt),
-            daemon=True
-        )
-    else:
-        thread = threading.Thread(
-            target=run_agent_task_in_thread,
-            args=(task_id, request.prompt, request.provider, request.headless),
-            daemon=True
-        )
+    # Organizer work is synchronous local file I/O -- run it directly in the
+    # background thread, no event loop needed.
+    thread = threading.Thread(
+        target=run_organizer_task,
+        args=(task_id, request.prompt),
+        daemon=True
+    )
 
     thread.start()
 
@@ -160,33 +173,22 @@ async def resume_task(task_id: str):
     if not original:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    if classify_task(original["prompt"]) != "organizer":
+        # Browser tasks are disabled entirely now (see start_task above) --
+        # an old browser task from before that change shouldn't be
+        # resumable either, since run_agent_task_in_thread would just fail
+        # the same way it always did.
+        raise HTTPException(status_code=400, detail=BROWSER_TASKS_DISABLED_MESSAGE)
+
     prior_actions = get_actions(task_id)
     new_task_id = f"task_{uuid.uuid4().hex[:8]}"
     create_task(new_task_id, original["prompt"])
 
-    if classify_task(original["prompt"]) == "organizer":
-        thread = threading.Thread(
-            target=run_organizer_task,
-            args=(new_task_id, original["prompt"]),
-            daemon=True
-        )
-    else:
-        last_url = None
-        for a in reversed(prior_actions):
-            if a.get("url"):
-                last_url = a["url"]
-                break
-
-        resume_context = {
-            "source_task_id": task_id,
-            "last_url": last_url,
-            "prior_actions": prior_actions,
-        }
-        thread = threading.Thread(
-            target=run_agent_task_in_thread,
-            args=(new_task_id, original["prompt"], None, None, resume_context),
-            daemon=True
-        )
+    thread = threading.Thread(
+        target=run_organizer_task,
+        args=(new_task_id, original["prompt"]),
+        daemon=True
+    )
 
     thread.start()
 
